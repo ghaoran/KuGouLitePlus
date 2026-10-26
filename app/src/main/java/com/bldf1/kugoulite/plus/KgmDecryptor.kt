@@ -195,7 +195,49 @@ internal object KgmDecryptor {
         return null
     }
 
+    /**
+     * 把 `xxx.kgm.flac` / `xxx.kgm` 这类名字改成纯音频后缀，
+     * 免得播放器按 .kgm 拒绝加载（内容已经是明文的话后缀就是最后一道障碍）。
+     */
+    private fun renameToPlainExt(file: File, fmt: String) {
+        val name = file.name
+        val lower = name.lowercase()
+        if (lower.endsWith(".$fmt")) return
+        var base = name
+        for (ext in ENCRYPTED_EXTS) {
+            if (base.lowercase().endsWith(ext)) {
+                base = base.substring(0, base.length - ext.length)
+                break
+            }
+        }
+        // 再去掉可能残留的 .kgm / .kgma 中缀
+        for (ext in ENCRYPTED_EXTS) {
+            val idx = base.lowercase().lastIndexOf(ext + ".")
+            if (idx > 0) {
+                base = base.substring(0, idx)
+                break
+            }
+        }
+        val target = File(file.parentFile, base + "." + fmt)
+        if (target.exists()) return
+        try {
+            if (file.renameTo(target)) {
+                ModuleLog.log("已重命名为 " + target.name)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     fun decryptInPlace(file: File): File? {
+        // ⚠️ 关键预检：酷狗的下载文件常是「已是明文的 FLAC/MP3，只是文件名还叫 .kgm.flac」。
+        // 这种文件再去解密只会把好好的音频打烂，必须先按魔数判断真实内容。
+        val existing = detectFormat(file)
+        if (existing != null) {
+            ModuleLog.log("已是明文音频，跳过解密: " + file.name + " (" + existing + ")")
+            renameToPlainExt(file, existing)
+            return null
+        }
+
         val tmp = File(file.parentFile, file.name + ".kgmdec.tmp")
         return try {
             val fmt = decrypt(file, tmp)
@@ -209,7 +251,8 @@ internal object KgmDecryptor {
                 tmp.delete()
             }
             ModuleLog.log("KGM 解密成功: " + file.name + " -> " + fmt)
-            file
+            renameToPlainExt(file, fmt)
+            return file
         } catch (t: Throwable) {
             tmp.delete()
             ModuleLog.log("KGM 解密异常: " + file.name + " " + t.message)

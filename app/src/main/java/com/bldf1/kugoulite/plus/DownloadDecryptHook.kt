@@ -154,6 +154,7 @@ internal object DownloadDecryptHook {
             } catch (_: Throwable) {
             }
             val seen = HashMap<String, Long>()
+            val done = HashMap<String, Long>()
             while (true) {
                 try {
                     if (!Settings.isFeature(ctx, Settings.KEY_AUTO_DECRYPT_DOWNLOAD)) {
@@ -167,15 +168,23 @@ internal object DownloadDecryptHook {
                             if (!f.isFile || !KgmDecryptor.isEncrypted(f.name)) continue
                             val key = f.absolutePath
                             val now = System.currentTimeMillis()
+                            val last = done[key]
+                            if (last != null && now - last < 10 * 60_000L) continue
                             val first = seen[key]
                             if (first == null) {
                                 seen[key] = now
                                 continue
                             }
                             if (now - first < 3000) continue
-                            if (KgmDecryptor.decryptInPlace(f) != null) {
-                                notifyMediaStore(f)
-                                seen.remove(key)
+                            // 无论成功与否都记一笔：已是明文的文件不需要每秒重试
+                            done[key] = now
+                            seen.remove(key)
+                            val before = f.length()
+                            val r = KgmDecryptor.decryptInPlace(f)
+                            if (r != null || f.length() != before) {
+                                notifyMediaStore(
+                                    if (r != null) r else f
+                                )
                             }
                         }
                     }
