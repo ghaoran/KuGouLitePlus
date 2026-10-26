@@ -96,6 +96,9 @@ class MainHook : XposedModule() {
         // 频道页「发帖引导条」源头拦截（「开启美好的一天」+ 去发布，5 秒后自行滑出）
         if ("postguide" !in skipHooks) ChannelPostGuideBlocker.install(this, classLoader)
 
+        // 下载即明文：把落盘的加密音频就地解密成通用格式
+        if ("decryptdl" !in skipHooks) DownloadDecryptHook.install(this, classLoader)
+
         // 词幕(Lyricon)歌词提供器 —— 只在 .support 进程真正安装（MediaSession 在那边）
         if ("lyricon" !in skipHooks) LyriconBridge.install(this, classLoader, processName)
 
@@ -119,6 +122,12 @@ class MainHook : XposedModule() {
                         processStartAt = System.currentTimeMillis()
                         ModuleLog.log("Application类: ${context.javaClass.name}")
                         LyriconBridge.onAppCreate(context)
+                        try {
+                            if (Settings.isFeature(context, Settings.KEY_AUTO_DECRYPT_DOWNLOAD)) {
+                                DownloadDecryptHook.sweepExisting(context)
+                            }
+                        } catch (_: Throwable) {
+                        }
                         ClaimWorker.start(context, classLoader)
                     } catch (e: Exception) {
                         ModuleLog.log("启动失败: $e")

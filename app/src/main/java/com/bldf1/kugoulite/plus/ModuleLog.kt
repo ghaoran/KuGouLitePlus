@@ -37,7 +37,14 @@ object ModuleLog {
         module = m
     }
 
+    /** 宿主 Application context（供后台线程取 ContentResolver / prefs 用） */
+    @Volatile
+    private var appCtx: Context? = null
+
+    fun appContext(): Context? = appCtx
+
     fun init(ctx: Context) {
+        appCtx = ctx.applicationContext ?: ctx
         try {
             logFile = ctx.filesDir.absolutePath + "/kugou_vip_module.log"
             val f = File(logFile)

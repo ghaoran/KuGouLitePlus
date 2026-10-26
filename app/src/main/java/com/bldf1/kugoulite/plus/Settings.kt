@@ -76,6 +76,14 @@ object Settings {
     /** 胶囊填充层改用液态玻璃材质（Round 28，API 33+；关掉则胶囊不含填充层） */
     const val KEY_UI_LIQUID_GLASS = "ui_liquid_glass"
 
+    /**
+     * 下载即明文（默认开启）
+     *
+     * 把酷狗下载落盘的加密音频（.kgm/.kgma/.kgms/.kgg/.vpr）就地解密成
+     * 通用 FLAC/MP3/WAV/OGG/M4A，让任意播放器都能播。
+     */
+    const val KEY_AUTO_DECRYPT_DOWNLOAD = "auto_decrypt_download"
+
     // ===== 防检测 =====
     const val KEY_BYPASS_SIGNATURE = "bypass_signature"
     const val KEY_BLOCK_UPDATE = "block_update"
