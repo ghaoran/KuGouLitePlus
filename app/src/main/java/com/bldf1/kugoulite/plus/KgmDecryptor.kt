@@ -240,7 +240,12 @@ internal object KgmDecryptor {
 
         val tmp = File(file.parentFile, file.name + ".kgmdec.tmp")
         return try {
-            val fmt = decrypt(file, tmp)
+            // 先试酷狗原生解密器（覆盖 KGG / mflac 这类需机器码密钥的格式）
+            var fmt = NativeH.decryptFile(file, tmp, NativeH.defaultDbPath())
+            if (fmt == null) {
+                // 回退到纯 Kotlin 的 KGM v3 掩码算法
+                fmt = decrypt(file, tmp)
+            }
             if (fmt == null) {
                 tmp.delete()
                 ModuleLog.log("KGM 解密失败(魔数不符): " + file.name)

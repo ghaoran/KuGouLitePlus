@@ -25,6 +25,14 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Install NDK
+        run: |
+          set -e
+          SDKMANAGER=$(command -v sdkmanager || echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager")
+          "$SDKMANAGER" "ndk;27.0.12077973"
+          echo "NDK 安装完成"
+          ls "$ANDROID_SDK_ROOT/ndk"
+
       - name: Install Android SDK components
         run: |
           set -e
