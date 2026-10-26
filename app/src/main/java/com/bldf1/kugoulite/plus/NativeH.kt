@@ -31,13 +31,45 @@ internal object NativeH {
         if (tried) return ready
         tried = true
         ready = try {
-            System.loadLibrary("kgmdec")
+            // 模块自身的 so 不在宿主的 native 搜索路径里，
+            // 必须用绝对路径加载，否则必然 UnsatisfiedLinkError。
+            val lib = File(cacheDir, "libkgmdec.so")
+            if (!lib.isFile || lib.length() == 0L) extractLib(lib)
+            System.load(lib.absolutePath)
+            ModuleLog.log("$TAG: libkgmdec 已加载 " + lib.length() + "B")
             nativeSetup()
         } catch (t: Throwable) {
-            ModuleLog.log("$TAG: native 初始化失败 " + t.message)
+            ModuleLog.log("$TAG: native 初始化失败 " + t.javaClass.simpleName + ": " + t.message)
             false
         }
         return ready
+    }
+
+
+    @Volatile private var cacheDir: File = File("/data/local/tmp")
+
+    /** 由外部在 Application 创建后注入可写目录 */
+    fun setCacheDir(dir: File) {
+        cacheDir = dir
+    }
+
+    /** 从自身 APK 抽出 libkgmdec.so 到可写目录 */
+    private fun extractLib(dst: File) {
+        try {
+            val self = javaClass.protectionDomain?.codeSource?.location?.path ?: return
+            val apkFile = File(self)
+            java.util.zip.ZipFile(apkFile).use { z ->
+                val e = z.getEntry("lib/arm64-v8a/libkgmdec.so") ?: return
+                dst.parentFile?.mkdirs()
+                z.getInputStream(e).use { ins ->
+                    dst.outputStream().use { out -> ins.copyTo(out) }
+                }
+                dst.setReadable(true)
+                dst.setExecutable(true)
+            }
+        } catch (t: Throwable) {
+            ModuleLog.log("$TAG: 抽取 so 失败 " + t.message)
+        }
     }
 
     fun isEncryptedContainer(name: String): Boolean {

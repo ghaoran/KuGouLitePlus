@@ -176,11 +176,14 @@ internal object DownloadDecryptHook {
                                 continue
                             }
                             if (now - first < 3000) continue
+                            // 三个进程都会轮询同一目录，用锁文件避免并发解密把文件写坏
+                            if (!tryLock(f)) continue
                             // 无论成功与否都记一笔：已是明文的文件不需要每秒重试
                             done[key] = now
                             seen.remove(key)
                             val before = f.length()
                             val r = KgmDecryptor.decryptInPlace(f)
+                            releaseLock(f)
                             if (r != null || f.length() != before) {
                                 notifyMediaStore(
                                     if (r != null) r else f
@@ -198,6 +201,29 @@ internal object DownloadDecryptHook {
             }
         }
         ModuleLog.log("$TAG: 目录轮询已启动")
+    }
+
+
+    /** 跨进程互斥：抢到 .lock 才处理 */
+    private fun tryLock(f: File): Boolean {
+        return try {
+            val lock = File(f.parentFile, "." + f.name + ".lock")
+            if (lock.exists() && System.currentTimeMillis() - lock.lastModified() < 60_000L) {
+                return false
+            }
+            lock.createNewFile()
+            lock.setLastModified(System.currentTimeMillis())
+            true
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
+    private fun releaseLock(f: File) {
+        try {
+            File(f.parentFile, "." + f.name + ".lock").delete()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun watchDirs(): List<File> = listOf(

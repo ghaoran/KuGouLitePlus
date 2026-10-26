@@ -241,10 +241,19 @@ internal object KgmDecryptor {
         val tmp = File(file.parentFile, file.name + ".kgmdec.tmp")
         return try {
             // 先试酷狗原生解密器（覆盖 KGG / mflac 这类需机器码密钥的格式）
-            var fmt = NativeH.decryptFile(file, tmp, NativeH.defaultDbPath())
+            var fmt: String? = null
+            try {
+                ModuleLog.log("解密入口: " + file.name + " native=" +
+                    NativeH.isEncryptedContainer(file.name))
+                fmt = NativeH.decryptFile(file, tmp, NativeH.defaultDbPath())
+                ModuleLog.log("原生解密结果: " + fmt)
+            } catch (t: Throwable) {
+                ModuleLog.log("原生解密异常: " + t.javaClass.simpleName + " " + t.message)
+            }
             if (fmt == null) {
                 // 回退到纯 Kotlin 的 KGM v3 掩码算法
                 fmt = decrypt(file, tmp)
+                ModuleLog.log("Kotlin 回退结果: " + fmt)
             }
             if (fmt == null) {
                 tmp.delete()

@@ -123,6 +123,10 @@ class MainHook : XposedModule() {
                         ModuleLog.log("Application类: ${context.javaClass.name}")
                         LyriconBridge.onAppCreate(context)
                         try {
+                            NativeH.setCacheDir(context.filesDir)
+                        } catch (_: Throwable) {
+                        }
+                        try {
                             if (Settings.isFeature(context, Settings.KEY_AUTO_DECRYPT_DOWNLOAD)) {
                                 DownloadDecryptHook.sweepExisting(context)
                                 DownloadDecryptHook.startWatcher(context)
