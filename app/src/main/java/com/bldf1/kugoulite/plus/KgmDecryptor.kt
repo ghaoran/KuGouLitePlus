@@ -97,14 +97,15 @@ internal object KgmDecryptor {
 
 
     private val ENCRYPTED_EXTS = arrayOf(
-        ".kgm", ".kgma", ".kgms", ".kgg", ".kggs", ".vpr"
+        ".kgm", ".kgma", ".kgms", ".kgg", ".kggs", ".vpr",
+        ".mflac", ".mflac0", ".mgg", ".mgg0"
     )
 
     fun isEncrypted(name: String): Boolean {
         val lower = name.lowercase()
         for (ext in ENCRYPTED_EXTS) if (lower.endsWith(ext)) return true
-        return lower.contains(".kgm.") || lower.contains(".kgma.") ||
-            lower.contains(".kgms.") || lower.contains(".kgg.") || lower.contains(".vpr.")
+        for (ext in ENCRYPTED_EXTS) if (lower.contains(ext + ".")) return true
+        return false
     }
 
     private fun isVpr(name: String) = name.lowercase().contains(".vpr")
@@ -202,7 +203,22 @@ internal object KgmDecryptor {
     private fun renameToPlainExt(file: File, fmt: String) {
         val name = file.name
         val lower = name.lowercase()
-        if (lower.endsWith(".$fmt")) return
+        if (lower.endsWith(".$fmt")) {
+            // 已经是目标后缀，但仍可能带 .kgm 等中缀
+            var b = name
+            var stripped = false
+            for (ext in ENCRYPTED_EXTS) {
+                val token = ext + "."
+                val i = b.lowercase().lastIndexOf(token)
+                if (i > 0) { b = b.substring(0, i); stripped = true; break }
+            }
+            if (!stripped) return
+            val t = File(file.parentFile, b + "." + fmt)
+            if (!t.exists()) {
+                try { if (file.renameTo(t)) ModuleLog.log("已重命名为 " + t.name) } catch (_: Throwable) {}
+            }
+            return
+        }
         var base = name
         for (ext in ENCRYPTED_EXTS) {
             if (base.lowercase().endsWith(ext)) {
@@ -218,6 +234,13 @@ internal object KgmDecryptor {
                 break
             }
         }
+        // 处理 xxx.kgg.flac / xxx.kgm.flac 这类双后缀
+        for (ext in ENCRYPTED_EXTS) {
+            val token = ext + "."
+            val i = base.lowercase().lastIndexOf(token)
+            if (i > 0) base = base.substring(0, i)
+        }
+        base = base.trimEnd('.')
         val target = File(file.parentFile, base + "." + fmt)
         if (target.exists()) return
         try {

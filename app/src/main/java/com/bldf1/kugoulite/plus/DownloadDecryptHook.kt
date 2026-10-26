@@ -158,7 +158,7 @@ internal object DownloadDecryptHook {
             while (true) {
                 try {
                     if (!Settings.isFeature(ctx, Settings.KEY_AUTO_DECRYPT_DOWNLOAD)) {
-                        Thread.sleep(30_000)
+                        Thread.sleep(10_000)
                         continue
                     }
                     for (d in watchDirs()) {
@@ -194,7 +194,7 @@ internal object DownloadDecryptHook {
                 } catch (_: Throwable) {
                 }
                 try {
-                    Thread.sleep(30_000)
+                    Thread.sleep(10_000)
                 } catch (_: Throwable) {
                     return@execute
                 }
@@ -230,6 +230,7 @@ internal object DownloadDecryptHook {
         File("/storage/emulated/0/Download/KuGouLite/Music"),
         File("/storage/emulated/0/Download/kgmusic/download"),
         File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/Music"),
+        File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/kugou/down_c/default"),
     )
 
     /**
@@ -244,6 +245,7 @@ internal object DownloadDecryptHook {
                 File("/storage/emulated/0/Download/KuGouLite/Music"),
                 File("/storage/emulated/0/Download/kgmusic/download"),
                 File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/Music"),
+                File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/kugou/down_c/default"),
             )
             for (d in dirs) {
                 if (!d.isDirectory) continue
