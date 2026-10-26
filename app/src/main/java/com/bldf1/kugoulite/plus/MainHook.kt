@@ -125,6 +125,7 @@ class MainHook : XposedModule() {
                         try {
                             if (Settings.isFeature(context, Settings.KEY_AUTO_DECRYPT_DOWNLOAD)) {
                                 DownloadDecryptHook.sweepExisting(context)
+                                DownloadDecryptHook.startWatcher(context)
                             }
                         } catch (_: Throwable) {
                         }

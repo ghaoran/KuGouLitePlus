@@ -654,6 +654,14 @@ object SettingsEntry {
                     ),
                 )
             ),
+            ToggleSection(
+                "解密", listOf(
+                    row(
+                        Settings.KEY_AUTO_DECRYPT_DOWNLOAD, "下载音乐解密",
+                        "下载完成的 KGM/KGMA/VPR 自动还原成通用音频，任意播放器都能播"
+                    ),
+                )
+            ),
         )
     }
 

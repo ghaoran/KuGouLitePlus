@@ -35,46 +35,46 @@ internal object DownloadDecryptHook {
 
     private var worker: java.util.concurrent.ExecutorService? = null
 
+    /** FileOutputStream 实例 → 落盘路径（仅用于观测，不持有强引用） */
+    private val paths = java.util.Collections.synchronizedMap(
+        java.util.WeakHashMap<Any, String>()
+    )
+
     fun install(module: XposedModule, classLoader: ClassLoader) {
         worker = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
             Thread(r, "kgm-decrypt").apply { isDaemon = true }
         }
 
-        hookFileOutputStreamClose(module, classLoader)
+        hookFileOutputStreamCtor(module, classLoader)
         ModuleLog.log("$TAG: 下载即明文 Hook 已安装")
     }
 
-    /** Hook FileOutputStream.close()，在关闭后检查路径 */
-    private fun hookFileOutputStreamClose(module: XposedModule, classLoader: ClassLoader) {
+    /**
+     * Hook FileOutputStream 构造器记录路径。
+     *
+     * Android 的 FileOutputStream 没有可读的 path 字段（字段名是私有的 fd/fileChannel），
+     * 唯一可靠的路径来源是构造函数的 File 参数，因此在这里把实例与路径关联起来。
+     */
+    private fun hookFileOutputStreamCtor(module: XposedModule, classLoader: ClassLoader) {
         try {
             val cls = FileOutputStream::class.java
-            val close = cls.getDeclaredMethod("close")
-            module.hook(close)
+            val ctor = cls.getDeclaredConstructor(File::class.java)
+            module.hook(ctor)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     val result = chain.proceed()
                     try {
-                        val fos = chain.thisObject as FileOutputStream
-                        val path = resolvePath(fos)
-                        if (path != null) scheduleCheck(path)
+                        val f = chain.args[0] as? File
+                        if (f != null) {
+                            paths[chain.thisObject] = f.absolutePath
+                            scheduleCheck(f.absolutePath)
+                        }
                     } catch (_: Throwable) {
                     }
                     result
                 }
         } catch (t: Throwable) {
-            ModuleLog.log("$TAG: FileOutputStream Hook 失败: ${t.message}")
-        }
-    }
-
-    /** 从 FileOutputStream 拿到落盘路径（API 26+ 用 fd 反查，失败则放弃） */
-    private fun resolvePath(fos: FileOutputStream): String? {
-        return try {
-            val f = FileOutputStream::class.java.getDeclaredField("path")
-            f.isAccessible = true
-            f.get(fos) as? String
-        } catch (_: Throwable) {
-            // Android 的实现字段名可能是 path / mPath，无法取得时由调用方按目录扫描兜底
-            null
+            ModuleLog.log("$TAG: FileOutputStream 构造器 Hook 失败: ${t.message}")
         }
     }
 
@@ -139,6 +139,63 @@ internal object DownloadDecryptHook {
             else -> "audio/*"
         }
     }
+
+    /**
+     * 目录轮询兜底：不管下载器用哪种方式写盘（FileOutputStream / NIO / native），
+     * 只要文件出现在下载目录且是加密后缀，就会被这里捞到。
+     *
+     * 首次延时 20s 避开启动高峰，之后每 30s 扫一次；单文件需稳定 3s 才开始解密，
+     * 避免读到只写了一半的文件。
+     */
+    fun startWatcher(ctx: Context) {
+        worker?.execute {
+            try {
+                Thread.sleep(20_000)
+            } catch (_: Throwable) {
+            }
+            val seen = HashMap<String, Long>()
+            while (true) {
+                try {
+                    if (!Settings.isFeature(ctx, Settings.KEY_AUTO_DECRYPT_DOWNLOAD)) {
+                        Thread.sleep(30_000)
+                        continue
+                    }
+                    for (d in watchDirs()) {
+                        if (!d.isDirectory) continue
+                        val files = d.listFiles() ?: continue
+                        for (f in files) {
+                            if (!f.isFile || !KgmDecryptor.isEncrypted(f.name)) continue
+                            val key = f.absolutePath
+                            val now = System.currentTimeMillis()
+                            val first = seen[key]
+                            if (first == null) {
+                                seen[key] = now
+                                continue
+                            }
+                            if (now - first < 3000) continue
+                            if (KgmDecryptor.decryptInPlace(f) != null) {
+                                notifyMediaStore(f)
+                                seen.remove(key)
+                            }
+                        }
+                    }
+                } catch (_: Throwable) {
+                }
+                try {
+                    Thread.sleep(30_000)
+                } catch (_: Throwable) {
+                    return@execute
+                }
+            }
+        }
+        ModuleLog.log("$TAG: 目录轮询已启动")
+    }
+
+    private fun watchDirs(): List<File> = listOf(
+        File("/storage/emulated/0/Download/KuGouLite/Music"),
+        File("/storage/emulated/0/Download/kgmusic/download"),
+        File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/Music"),
+    )
 
     /**
      * 兜底扫描：启动时把下载目录里遗留的加密文件也解掉。
