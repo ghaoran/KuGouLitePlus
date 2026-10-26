@@ -125,10 +125,28 @@ internal object NativeH {
         return KgmDecryptor.detectFormat(dst)
     }
 
+    /**
+     * 读 audio_hash。
+     *
+     * 酷狗在 0x48 处存的是 hash 的 **ASCII 十六进制串**
+     * （如 "6163636132623438..." 其实是 "acca2b48..." 的 hex），
+     * 长度在 0x44。必须转回字节再转 hex，否则拿去查库/对 key 永远对不上。
+     */
     private fun audioHash(h: ByteArray): String? {
         val len = le32(h, 0x44)
         if (len <= 0 || 0x48 + len > h.size) return null
-        return String(h, 0x48, len, Charsets.UTF_8).trimEnd('\u0000')
+        val ascii = String(h, 0x48, len, Charsets.US_ASCII).trimEnd('\u0000')
+        // 全为 hex 字符且长度为偶数 → 是 hex 编码的 hash
+        if (ascii.length % 2 == 0 && ascii.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) {
+            val out = StringBuilder(ascii.length / 2)
+            var i = 0
+            while (i < ascii.length) {
+                out.append(ascii.substring(i, i + 2).toInt(16).toChar())
+                i += 2
+            }
+            return out.toString()
+        }
+        return ascii
     }
 
     /** 在酷狗数据库里按 mgg_hash / filehash 找 fileuserkey */
