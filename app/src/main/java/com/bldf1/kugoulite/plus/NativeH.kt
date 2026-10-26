@@ -89,7 +89,10 @@ internal object NativeH {
             val ver = le32(head, 0x14)
             if (hlen <= 0 || hlen >= src.length()) return null
 
-            val ekey = if (ver == 5) audioHash(head)?.let { lookupEkey(dbPath, it) } else null
+            val ah = audioHash(head)
+            var ekey = if (ver == 5 && ah != null) MggKeyHook.keyFor(ah) else null
+            if (ekey != null) ModuleLog.log("$TAG: 用抓到的 mggKey len=" + ekey.length)
+            if (ekey == null) ekey = if (ver == 5) ah?.let { lookupEkey(dbPath, it) } else null
             if (ekey == null) {
                 ModuleLog.log("$TAG: 取不到 ekey (ver=" + ver + ")")
                 return null

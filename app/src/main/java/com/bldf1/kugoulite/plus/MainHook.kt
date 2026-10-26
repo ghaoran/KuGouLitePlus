@@ -96,6 +96,9 @@ class MainHook : XposedModule() {
         // 频道页「发帖引导条」源头拦截（「开启美好的一天」+ 去发布，5 秒后自行滑出）
         if ("postguide" !in skipHooks) ChannelPostGuideBlocker.install(this, classLoader)
 
+        // 抓取 KGG/mflac 解密所需的 mggKey
+        if ("mggkey" !in skipHooks) MggKeyHook.install(this, classLoader)
+
         // 下载即明文：把落盘的加密音频就地解密成通用格式
         if ("decryptdl" !in skipHooks) DownloadDecryptHook.install(this, classLoader)
 
@@ -124,6 +127,7 @@ class MainHook : XposedModule() {
                         LyriconBridge.onAppCreate(context)
                         try {
                             NativeH.setCacheDir(context.filesDir)
+                            MggKeyHook.setStoreFile(java.io.File(context.filesDir, "mggkeys.txt"))
                         } catch (_: Throwable) {
                         }
                         try {
