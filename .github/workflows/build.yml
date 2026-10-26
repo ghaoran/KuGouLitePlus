@@ -8,6 +8,9 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
+      actions: read
     runs-on: ubuntu-latest
     env:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -37,9 +40,21 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace --no-daemon
 
-      - name: Upload APK
+      - name: Upload APK (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: KuGouLitePlus-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish to Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: KuGouLitePlus 自动构建 #${{ github.run_number }}
+          body: |
+            自动构建产物（commit ${{ github.sha }}）
+            含「解密」分组：下载音乐解密开关（默认开启）
+          files: app/build/outputs/apk/debug/*.apk
+          prerelease: true
