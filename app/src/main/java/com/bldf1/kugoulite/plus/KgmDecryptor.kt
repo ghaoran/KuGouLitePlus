@@ -248,7 +248,7 @@ internal object KgmDecryptor {
                 val hash = KggDecryptor.audioHash(head)
                 val ek = if (hash != null) MggKeyHook.keyFor(hash) else null
                 if (ek != null) {
-                    ModuleLog.log("解密入口: " + file.name + " hash=" + hash.take(16))
+                    ModuleLog.log("解密入口: " + file.name + " hash=" + (hash?.take(16) ?: "null"))
                     fmt = KggDecryptor.decrypt(file, tmp, ek)
                     ModuleLog.log("QMC2 解密结果: " + fmt)
                 }

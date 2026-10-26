@@ -17,8 +17,9 @@ internal object Qmc2 {
     private const val DELTA = 0x9E3779B9L
     private const val MASK = 0xFFFFFFFFL
 
-    fun deriveKey(ekeyB64: String): ByteArray? = try {
-        var raw = Base64.decode(ekeyB64, Base64.NO_WRAP)
+    fun deriveKey(ekeyB64: String): ByteArray? {
+        return try {
+            var raw = Base64.decode(ekeyB64, Base64.NO_WRAP)
         if (raw.size < 16) return null
         val prefix = "QQMusic EncV2,Key:".toByteArray()
         if (raw.copyOfRange(0, minOf(prefix.size, raw.size)).contentEquals(prefix)) {
@@ -39,8 +40,9 @@ internal object Qmc2 {
             tk[i * 2 + 1] = raw[i]
         }
         raw.copyOfRange(0, 8) + tencentTeaDecrypt(raw.copyOfRange(8, raw.size), tk)
-    } catch (_: Throwable) {
-        null
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     fun decrypt(audio: ByteArray, key: ByteArray) {
