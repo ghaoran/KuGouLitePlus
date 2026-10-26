@@ -108,6 +108,7 @@ internal object MggKeyHook {
 
     fun setStoreFile(f: File) {
         storeFile = f
+        loaded = false
         load()
     }
 
@@ -119,12 +120,19 @@ internal object MggKeyHook {
                 val i = line.indexOf('\t')
                 if (i > 0) keys[line.substring(0, i)] = line.substring(i + 1)
             }
+            loaded = true
             ModuleLog.log("$TAG: 已载入 " + keys.size + " 个 key")
         } catch (_: Throwable) {
+            loaded = true
         }
     }
 
-    fun keyFor(hash: String): String? = keys[hash]
+    @Volatile private var loaded = false
+
+    fun keyFor(hash: String): String? {
+        if (!loaded) load()
+        return keys[hash]
+    }
 
     fun allKeys(): Map<String, String> = keys.toMap()
 }

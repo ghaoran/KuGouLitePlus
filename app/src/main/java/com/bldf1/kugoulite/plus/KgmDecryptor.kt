@@ -266,14 +266,24 @@ internal object KgmDecryptor {
             // KGG/mflac：优先用已抓到的 mggKey 走 QMC2 解密（纯 Kotlin）
             var fmt: String? = null
             try {
+                // 用 read() 而非 readFully：小文件（如 down_c 里的 .mflac）不会 EOFException
                 val head = ByteArray(0x400)
-                java.io.RandomAccessFile(file, "r").use { it.readFully(head) }
-                val hash = KggDecryptor.audioHash(head)
+                var n = 0
+                java.io.RandomAccessFile(file, "r").use { r ->
+                    while (n < head.size) {
+                        val k = r.read(head, n, head.size - n)
+                        if (k < 0) break
+                        n += k
+                    }
+                }
+                val hash = if (n >= 0x50) KggDecryptor.audioHash(head) else null
                 val ek = if (hash != null) MggKeyHook.keyFor(hash) else null
                 if (ek != null) {
-                    ModuleLog.log("解密入口: " + file.name + " hash=" + (hash?.take(16) ?: "null"))
+                    ModuleLog.log("解密入口: " + file.name + " hash=" + hash.take(16))
                     fmt = KggDecryptor.decrypt(file, tmp, ek)
                     ModuleLog.log("QMC2 解密结果: " + fmt)
+                } else {
+                    ModuleLog.log("QMC2 跳过(无 key): " + file.name + " hash=" + (hash?.take(16) ?: "none"))
                 }
             } catch (t: Throwable) {
                 ModuleLog.log("QMC2 解密异常: " + t.javaClass.simpleName + " " + t.message)
