@@ -378,7 +378,7 @@ object UiCleaner {
     private data class RecheckTask(val view: View, val rule: UiRule, val atUptime: Long, val tick: Long)
 
     private val recheckQueue = PriorityQueue<RecheckTask>(compareBy { it.atUptime })
-    private val recheckSeen = HashSet<Triple<View, Rule, Long>>()
+    private val recheckSeen = HashSet<Triple<View, UiRule, Long>>()
     private var recheckPumpRunning = false
 
     private fun scheduleIdRecheck(view: View, rule: UiRule, delay: Long) {
