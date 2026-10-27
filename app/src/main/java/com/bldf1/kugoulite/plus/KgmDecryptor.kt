@@ -101,6 +101,20 @@ internal object KgmDecryptor {
         ".mflac", ".mflac0", ".mgg", ".mgg0"
     )
 
+    /**
+     * 已知**无法解密**的后缀：.mgg / .mgg0
+     *
+     * 这两个是酷狗下载过程中的分片容器，不是成品音频（真机抓包确认：
+     * down_c/default 下 xxx_2_hash_N.mgg 会随下载进度增长/合并）。
+     * 强行解密只会必然失败并刷屏，直接跳过。
+     */
+    private val UNSUPPORTED_EXTS = arrayOf(".mgg", ".mgg0")
+
+    private fun isUnsupported(name: String): Boolean {
+        val n = name.lowercase()
+        return UNSUPPORTED_EXTS.any { n.endsWith(it) }
+    }
+
     fun isEncrypted(name: String): Boolean {
         val lower = name.lowercase()
         for (ext in ENCRYPTED_EXTS) if (lower.endsWith(ext)) return true
@@ -258,6 +272,11 @@ internal object KgmDecryptor {
         if (existing != null) {
             ModuleLog.log("已是明文音频，跳过解密: " + file.name + " (" + existing + ")")
             renameToPlainExt(file, existing)
+            return null
+        }
+
+        if (isUnsupported(file.name)) {
+            // 分片容器，不是成品音频，跳过避免无意义重试
             return null
         }
 

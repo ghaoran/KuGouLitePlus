@@ -30,10 +30,19 @@ internal object MggKeyHook {
 
     private fun hookQuery(module: XposedModule, classLoader: ClassLoader) {
         try {
-            val iface = Class.forName(
-                "com.kugou.common.filemanager.downloadengine.Engine\$IKggKeyQueryCallback",
-                false, classLoader
-            )
+            // ⚠️ 必须 Hook **实现类**，不是接口！
+            // 接口的 query() 是 abstract，LSPosed 直接拒绝：
+            //   Cannot hook abstract methods: Engine$IKggKeyQueryCallback.query(...)
+            // 真机调用实现是 job.p$c（com.kugou.common.filemanager.job.p$c.query）
+            val iface = try {
+                Class.forName("com.kugou.common.filemanager.job.p\$c", false, classLoader)
+            } catch (_: Throwable) {
+                // 回退到接口（某些版本实现类名不同）
+                Class.forName(
+                    "com.kugou.common.filemanager.downloadengine.Engine\$IKggKeyQueryCallback",
+                    false, classLoader
+                )
+            }
             val m = iface.getDeclaredMethod(
                 "query", Long::class.javaPrimitiveType, String::class.java, String::class.java
             )

@@ -97,6 +97,23 @@ object PrefStore {
         editor.apply()
     }
 
+
+    /**
+     * 安全读取 String：SP 中某些键（token/uid/dfid/mid）在部分版本里存的是 Long，
+     * 直接 getString 会抛 ClassCastException，导致整个凭证读取失败。
+     */
+    private fun str(sp: android.content.SharedPreferences, key: String): String? = try {
+        val v = sp.all[key]
+        when (v) {
+            is String -> v
+            is Long, is Int, is Float, is Double -> v.toString()
+            is Boolean -> v.toString()
+            else -> null
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
     /**
      * 从酷狗概念版自身的 SharedPreferences 中尝试读取凭证（备用方案）
      *
@@ -123,18 +140,18 @@ object PrefStore {
                 val sp = ctx.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
 
                 if (token == null) {
-                    token = sp.getString("token", null)
+                    token = str(sp, "token")
                 }
                 if (userid == null) {
-                    userid = sp.getString("userid", null)
-                        ?: sp.getString("uid", null)
-                        ?: sp.getString("kugouid", null)
+                    userid = str(sp, "userid")
+                        ?: str(sp, "uid")
+                        ?: str(sp, "kugouid")
                 }
                 if (dfid == null) {
-                    dfid = sp.getString("dfid", null)
+                    dfid = str(sp, "dfid")
                 }
                 if (mid == null) {
-                    mid = sp.getString("mid", null) ?: sp.getString("KUGOU_API_MID", null)
+                    mid = str(sp, "mid") ?: str(sp, "KUGOU_API_MID")
                 }
 
                 if (token != null && userid != null) break

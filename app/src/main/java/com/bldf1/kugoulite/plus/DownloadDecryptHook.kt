@@ -169,7 +169,7 @@ internal object DownloadDecryptHook {
                             val key = f.absolutePath
                             val now = System.currentTimeMillis()
                             val last = done[key]
-                            if (last != null && now - last < 10 * 60_000L) continue
+                            if (last != null && now - last < 6 * 3600_000L) continue
                             val first = seen[key]
                             if (first == null) {
                                 seen[key] = now
@@ -226,11 +226,17 @@ internal object DownloadDecryptHook {
         }
     }
 
+    /**
+     * 只监控「下载完成」的目录。
+     *
+     * ⚠️ 绝不能监控 down_c/default：那里是下载**过程中**的加密碎片
+     * （xxx_2_hash_N.mgg / .mflac），不是成品音频。之前监控它导致
+     * 每 10 秒对同一批碎片反复解密失败、日志刷屏、CPU 空转。
+     */
     private fun watchDirs(): List<File> = listOf(
         File("/storage/emulated/0/Download/KuGouLite/Music"),
         File("/storage/emulated/0/Download/kgmusic/download"),
         File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/Music"),
-        File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/kugou/down_c/default"),
     )
 
     /**
@@ -245,7 +251,6 @@ internal object DownloadDecryptHook {
                 File("/storage/emulated/0/Download/KuGouLite/Music"),
                 File("/storage/emulated/0/Download/kgmusic/download"),
                 File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/Music"),
-                File("/storage/emulated/0/Android/data/com.kugou.android.lite/files/kugou/down_c/default"),
             )
             for (d in dirs) {
                 if (!d.isDirectory) continue
