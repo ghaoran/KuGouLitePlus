@@ -181,13 +181,12 @@ internal object KgmDecryptor {
             ((b[off + 2].toInt() and 0xFF) shl 16) or
             ((b[off + 3].toInt() and 0xFF) shl 24)
 
-    fun detectFormat(f: File): String? {
-        val head = ByteArray(8)
-        val n = try {
-            f.inputStream().use { it.read(head) }
-        } catch (_: Throwable) {
-            return null
-        }
+    /**
+     * 按魔数判断内存中的字节流是不是合法音频。
+     * 用于「先试解 4KB 再决定是否全量解密」，避免错误 key 写出巨大垃圾文件。
+     */
+    fun sniff(head: ByteArray): String? {
+        val n = head.size
         if (n < 4) return null
         if (head[0] == 'f'.code.toByte() && head[1] == 'L'.code.toByte() &&
             head[2] == 'a'.code.toByte() && head[3] == 'C'.code.toByte()
@@ -208,6 +207,17 @@ internal object KgmDecryptor {
             head[6] == 'y'.code.toByte() && head[7] == 'p'.code.toByte()
         ) return "m4a"
         return null
+    }
+
+    fun detectFormat(f: File): String? {
+        val head = ByteArray(8)
+        val n = try {
+            f.inputStream().use { it.read(head) }
+        } catch (_: Throwable) {
+            return null
+        }
+        if (n < 4) return null
+        return sniff(head)
     }
 
     /**
@@ -296,11 +306,18 @@ internal object KgmDecryptor {
                     }
                 }
                 val hash = if (n >= 0x50) KggDecryptor.audioHash(head) else null
-                val ek = if (hash != null) MggKeyHook.keyFor(hash) else null
-                if (ek != null) {
-                    ModuleLog.log("解密入口: " + file.name + " hash=" + (hash ?: "?").take(16))
-                    fmt = KggDecryptor.decrypt(file, tmp, ek)
-                    ModuleLog.log("QMC2 解密结果: " + fmt)
+                // 同一 hash 在 MMKV 里可能有多条 key（旧版残留 + 新版），
+                // 必须逐个试，直到解出合法音频为止。
+                val candidates = if (hash != null) MggKeyHook.candidatesFor(hash) else emptyList()
+                if (candidates.isNotEmpty()) {
+                    ModuleLog.log("解密入口: " + file.name + " hash=" + (hash ?: "?").take(16) +
+                        " 候选key=" + candidates.size)
+                    for ((idx, ek) in candidates.withIndex()) {
+                        fmt = KggDecryptor.decrypt(file, tmp, ek)
+                        ModuleLog.log("QMC2 解密结果[" + (idx + 1) + "/" + candidates.size +
+                            " keyLen=" + ek.length + "]: " + fmt)
+                        if (fmt != null) break
+                    }
                 } else {
                     ModuleLog.log("QMC2 跳过(无 key): " + file.name + " hash=" + (hash?.take(16) ?: "none"))
                 }

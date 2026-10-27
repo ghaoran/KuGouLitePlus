@@ -51,14 +51,25 @@ internal object KggDecryptor {
             if (input.read(head) < 0x50) return null
             val hlen = le32(head, 0x10)
             if (hlen <= 0 || hlen >= src.length()) return null
+
+            // 先用前 4KB 试解校验：key 不对时没必要把几十 MB 全解一遍，
+            // 也就不会写出巨大的无效文件（真机上曾因此写出 2 份 33MB 垃圾）。
+            val probe = ByteArray(minOf(4096, (src.length() - hlen).toInt()))
+            input.seek(hlen.toLong())
+            input.readFully(probe)
+            Qmc2.decrypt(probe, key)
+            val probeFmt = KgmDecryptor.sniff(probe)
+            if (probeFmt == null) return null
+
+            // 校验通过，全量解密
             input.seek(hlen.toLong())
             val body = ByteArray((src.length() - hlen).toInt())
             input.readFully(body)
             Qmc2.decrypt(body, key)
             dst.parentFile?.mkdirs()
             dst.outputStream().use { it.write(body) }
+            return probeFmt
         }
-        return KgmDecryptor.detectFormat(dst)
     }
 
     private fun le32(b: ByteArray, o: Int): Int =

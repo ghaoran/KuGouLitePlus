@@ -166,18 +166,34 @@ internal object MggKeyHook {
      * 所以直接在原始字节里做文本扫描即可，无需解析 MMKV 格式。
      */
     @Volatile private var mmkvTried = false
-    @Volatile private var mmkvMap: Map<String, String> = emptyMap()
+    @Volatile private var mmkvMap: Map<String, List<String>> = emptyMap()
 
     private fun readFromMmkv(hash: String): String? {
         if (!mmkvTried) {
             mmkvTried = true
             mmkvMap = scanMmkv()
         }
-        return mmkvMap[hash]
+        return mmkvMap[hash]?.firstOrNull()
     }
 
-    private fun scanMmkv(): Map<String, String> {
-        val out = HashMap<String, String>()
+    /**
+     * 同一 hash 在 MMKV 里可能有多条不同 key（旧版本残留 + 新版本）。
+     * 解密时必须逐个尝试，不能只取第一条。
+     */
+    fun candidatesFor(hash: String): List<String> {
+        if (!loaded) load()
+        val out = LinkedHashSet<String>()
+        keys[hash]?.let { if (it.isNotEmpty()) out.add(it) }
+        if (!mmkvTried) {
+            mmkvTried = true
+            mmkvMap = scanMmkv()
+        }
+        mmkvMap[hash]?.let { out.addAll(it) }
+        return out.toList()
+    }
+
+    private fun scanMmkv(): Map<String, List<String>> {
+        val out = HashMap<String, MutableList<String>>()
         val pkg = "com.kugou.android.lite"
         val dirs = arrayOf(
             "/data/data/$pkg/files/mmkv",
@@ -194,9 +210,13 @@ internal object MggKeyHook {
                     for (m in re.findAll(txt)) {
                         val h = m.groupValues[1].lowercase()
                         val key = m.value.substringBefore(' ').trim()
-                        if (key.length >= 100) out[h] = key
+                        if (key.length >= 100) {
+                            val list = out.getOrPut(h) { ArrayList() }
+                            if (!list.contains(key)) list.add(key)
+                        }
                     }
-                    ModuleLog.log("$TAG: MMKV $n 解析出 " + out.size + " 组 key")
+                    ModuleLog.log("$TAG: MMKV $n 解析出 " + out.size + " 个 hash / " +
+                        out.values.sumOf { it.size } + " 条 key")
                 } catch (t: Throwable) {
                     ModuleLog.log("$TAG: 读 MMKV $n 失败 " + t.message)
                 }
