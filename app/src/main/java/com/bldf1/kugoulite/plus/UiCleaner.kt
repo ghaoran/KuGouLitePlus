@@ -115,7 +115,7 @@ object UiCleaner {
     internal var currentActivity: WeakReference<Activity>? = null
 
     // 被本模块隐藏的控件 → 所属规则（分离时恢复，保证回收池干净）
-    private val hiddenByUs = WeakHashMap<View, Rule>()
+    private val hiddenByUs = WeakHashMap<View, UiRule>()
 
     // INVISIBLE 隐藏标记：空标题槽位预隐藏用 INVISIBLE（保锚定链），
     // 复活压制 hook 压回时按此标记选 INVISIBLE 而非 GONE
@@ -150,285 +150,14 @@ object UiCleaner {
      * useCardHide：整卡模式（hideCardWithRecheck）
      * excludeIdNames：ID 排除门禁
      */
-    private class Rule(
-        val key: String, val name: String,
-        val classKeywords: List<String>, val textKeywords: List<String>,
-        val region: FloatArray? = null,
-        val minWRatio: Float = 0f,
-        val minYRatio: Float = 0f,
-        val maxYRatio: Float = 0f,
-        val idNames: List<String> = listOf(),
-        val ancestorClass: String? = null,
-        val hideParentLevels: Int = 0,
-        val sectionMode: Boolean = false,
-        val useCardHide: Boolean = false,
-        val excludeIdNames: List<String> = listOf(),
-        // 文本排除门禁：命中这些词就整条规则跳过。
-        // 真机实锤（设置页两处空白）：搜索推广规则按"广告/推广"匹配，把隐私设置里
-        // 「定向广告推送」「互动广告管理」这两个开关的标题也藏了，只剩开关没有文字。
-        val excludeTextKeywords: List<String> = listOf(),
-        // Activity 名门禁（治本）：只在该类名包含指定片段的 Activity 里生效。
-        // 「搜索推广」就用它 —— 这条规则本该只管搜索页，之前靠"广告/推广"短词
-        // 全 app 命中，把设置页三行标题都藏了（真机实锤）。
-        val requireActivityName: String? = null,
-        // ⭐ R168「规则页面归属」：本规则**只在**这些页面生效。
-        // 空集合 = 所有页面（向后兼容，现有规则不标注即保持原行为）。
-        // 页面 id 见 computePageId()：search / player / discovery / main /
-        // fav / recent / profile …
-        // 目的：把"全 app 跑一遍再靠门禁排除"改成"页面 → 规则集合"，
-        // 无规则的页面连判定都不做（性能 + 防误伤）。
-        val pageIds: Set<String> = emptySet(),
-        // 类名排除门禁（真机实锤 15:0x）：同一资源 ID 在首页顶栏与我的页是
-        // 完全不同的控件——「我的页赚钱入口」(dk_) 的祖先判定
-        // TwoViewSwitchLayout 在首页顶栏同样成立，会把顶栏"乐库"入口一起
-        // 隐藏（用户实锤：顶栏只剩"发现"）。按类名排除顶栏图标控件。
-        val excludeClassNames: List<String> = listOf(),
-        // 高度塌缩隐藏：GONE + layoutParams.height=0 + savedHeights
-        // （我的页白卡内的整行推广条用——只 GONE 会留 180px 白洞）
-        val collapseHeight: Boolean = false,
-        // 兄弟 ID 门禁：同父容器内必须存在该 ID 的兄弟节点才命中
-        // （赚钱 tab dk_ 与「我的」tab dk5 成对出现，凭此与其它页面同名
-        // 顶栏图标区分，替代一刀切的 excludeClassNames）
-        val requireSiblingIdName: String? = null,
-        // 页面语义门禁（真机实锤 Round 19）：同一资源 ID 在主 pager 两页
-        // 复用——页 0(发现) 时 dk_ 是「乐库」入口，页 1(我的) 时才是
-        // 「赚钱」入口。结构判定不可靠（uiautomator 省略中间节点），
-        // 必须按"我的页是否在屏幕上"判定（见 minePageOnScreen）
-        val requireMinePage: Boolean = false,
-        /**
-         * ⭐ R85b「alpha 保险」开关（**按规则选择加入**，默认关）。
-         *
-         * 仅用于"宿主会把已隐藏视图**复活**、其它手段都拦不住"的规则（目前只有「播放页书签」）。
-         * 置 true 后隐藏时会把 `alpha` 同时置 0 —— 宿主复活只改 visibility、碰不到 alpha，
-         * 所以即使被复活也是全透明。
-         *
-         * ⚠️ 为什么默认关、且必须**按规则**开：置过 alpha 的视图在**每一条还原路径**上都要还原
-         * （全仓有 8 处 `hiddenByUs.remove`），漏一处该视图就会**永久透明**。
-         * 把范围收到单条规则，风险面才可控。（还原统一走 `restoreAlphaShield()` helper）
-         */
-        val alphaShield: Boolean = false,
-        // ⚠️ 爬升门禁（真机实锤 Round 26，用户报「我的页右上角 搜索/信息中心/
-        // 设置 图标被误伤」）：hideParentLevels="连父容器一起藏" 只有在父容器
-        // **确属本规则的专属底板**时才成立。混淆 ID 跨页复用时父容器可能是
-        // 完全无关的功能容器——dg0(LottieAnimationView 免费听动画) 在发现页的
-        // 父是 dg1(HnVisualEffectLayout，免费听图标专属胶囊底板，连父藏正确)，
-        // 在我的页的父却是 apg(LinearLayout 顶栏图标容器，内含 dg0/f5i/c67/f5j
-        // 四个图标，即「免|搜索|信息中心|设置」) → 无条件爬升 = 把整个顶栏
-        // 图标区带走（日志实锤 `UI净化[免费听图标] 隐藏: LinearLayout`；
-        // 关掉 ui_free_listen 后三图标全部回来）。
-        // 列入此表后：直接父 ID 命中 → 按 hideParentLevels 爬升；否则退化为只
-        // 藏自身（levels=0），绝不牵连同层兄弟。
-        val climbParentIdNames: List<String> = listOf(),
-        // ⭐ 父容器 ID 门禁（Round 26）：**直接父容器**的 resourceName 必须命中
-        // 白名单才算命中。比 requireMinePage 稳定——挂载瞬间父容器就已确定，
-        // 可在**绘制之前**即时预隐藏（零闪现）；而页面语义门禁在挂载期仍反映
-        // 旧页，会退化成"先绘制后隐藏"（Task #26 抖动）。父缺失/无 ID=不命中。
-        val parentIdNames: List<String> = listOf(),
-        // ⭐ 祖先 ID 门禁（Round 46）：祖先链（限深 12）任一级 resourceName 命中
-        // 白名单才算命中。用于目标视图本身带通用混淆 ID（如红点数字 ip9）、
-        // 但其**直接父容器无 ID** 的场景（父容器门禁够不着）——例如我的页顶栏
-        // apg 内信息中心红点（c6_/ip9 挂在无 ID 的 FrameLayout 下）。
-        val ancestorIdNames: List<String> = listOf()
-    )
-
-    private val RULES = listOf(
-        Rule(Settings.KEY_UI_SPLASH, "开屏广告",
-            listOf("SplashAd", "OpenAd", "SplashAdvert", "GdtAd", "tangramsplash"), listOf()),
-        Rule(Settings.KEY_UI_BANNER, "首页Banner",
-            // ⚠️ SlowSmoothSwipeViewPager 从 classKw 移除（真机验证发现误杀）：
-            // 该类是通用轮播控件——发现页 feed 中部的运营推荐卡轮播
-            // (ew, 1112px≈0.91 屏宽, 3 张正常运营图) 也用它，宽度>minWRatio 0.88
-            // 被 scan 命中 → climbParent(1) 把整个 feed item GONE → feed 底部
-            // 一大片空白占位（13:07 真机实锤）。广告轮播由 PERSISTENT_HIDE 的
-            // Discovery*AdsView 出生拦截 + 「发现页Banner槽位」ela ID 制导覆盖，
-            // 不需要类名兜底。与 PERSISTENT_HIDE 注释的历史决定（该类非广告
-            // 专属，加入会连累乐库 Banner）一致化
-            listOf("MosaicView"),
-            listOf(),
-            minWRatio = 0.88f, minYRatio = 0.25f, hideParentLevels = 1),
-        // 发现页 feed 顶部的淘宝/天猫运营推广位（Round 51+，用户要求隐藏）：
-        // 淘宝倒计时条（bnr=FrameLayout：「上淘宝更优惠」+「立即查看」+倒计时）
-        // 与天猫活动大卡（fmx=FrameLayout：含 fn1「天猫双11」角标），都在发现页
-        // feed RecyclerView(b7e) 里。活动文案随档期变化（双11/618/年货节…），
-        // 固定文本会过期 → 用「淘宝/天猫」语义词触发 + 爬升白名单（bnr/fmx）
-        // 双门禁：文本命中后只有直接父是 bnr/fmx 才连父隐藏；ID 跨页复用时
-        // 退化为只藏文本，绝不牵连同层。
-        Rule(Settings.KEY_UI_TAOBAO_BAR, "发现页淘宝推广条",
-            listOf(), listOf("淘宝"), hideParentLevels = 1,
-            climbParentIdNames = listOf("bnr")),
-        Rule(Settings.KEY_UI_TMALL_CARD, "发现页天猫活动卡",
-            listOf(), listOf("天猫"), hideParentLevels = 1,
-            climbParentIdNames = listOf("fmx")),
-        Rule(Settings.KEY_UI_PLAY_AD, "播放页广告",
-            listOf("PlayAd", "PlayerAd", "SongAd", "PlayPageAd"), listOf()),
-        // ⚠️ R79 修正：本条原先挂在 `KEY_UI_PLAY_AD`（去播放页广告）上 —— 结果面板上
-        // 「去播放页书签」这个开关**没有任何实现引用 = 死开关**，而书签的实际隐藏被
-        // 「去播放页广告」顺带控制（用户点书签开关毫无反应）。现改回它自己的 key。
-        Rule(Settings.KEY_UI_PLAY_BOOKMARK, "播放页书签",
-            // R139：dt7 改用 **INVISIBLE 占位**（见 scan 里的处理），不再用规则 GONE ——
-            // GONE 会让布局少一格，标题整体右移；INVISIBLE 保留占位，标题自然居中，
-            // 也不需要 translationX 补偿（那种补偿会压制切歌动画，之前踩过）。
-            listOf(), listOf(), idNames = listOf("elq"), maxYRatio = 0.12f,
-            alphaShield = false),
-        // ⚠️ R79 同上：「去每周福利条」也是死开关，实际由「去播放页广告」控制。已改回自己的 key。
-        Rule(Settings.KEY_UI_WEEKLY_WELFARE, "每周福利条",
-            listOf(), listOf("每周福利"), hideParentLevels = 1),
-        // 咱一起自律入口（Round 51，用户要求移除）：播放页歌词下方左侧的
-        // 情绪/场景标签胶囊（dq4=LinearLayout 图标+文字容器），文本随歌变化
-        // （L-O-V-E 歌显示「咱一起自律」、另曲显示「伤感」）→ 不能按文本匹配，
-        // 用 ID 制导 + 高度区间门禁（真机 y≈1833/2712≈0.68）限制到播放页该位置。
-        Rule(Settings.KEY_UI_PLAY_DISCIPLINE, "咱一起自律入口",
-            listOf(), listOf(), idNames = listOf("dq4"),
-            minYRatio = 0.60f, maxYRatio = 0.75f),
-        // ⚠️ R66：本规则关键词只有「广告/推广」两个**极通用的短词**，且**既无页面门禁也无 ID 门禁**
-        // ⇒ 会在**其它页面**的正文里误命中。真机实锤（flashscan）：冷启留在发现页时，
-        // feed 的**推荐语槽位 b5w** 文本为「7 推荐 - 你是那场电影 而我只是那场电影中的那段广告」
-        // ⇒ 命中「广告」⇒ 把推荐语 TextView(794x41) 藏掉，且**藏的时候它已经上过屏**
-        // （`严格=是`）＝用户看到推荐语闪一下。同一视图一次会话被藏 3 次。
-        // 处方同「频道推荐/免费听区块」那两处历史坑（memory：**推荐语是 b5w，无门禁会误伤**）：
-        // 排除推荐语槽位。（更彻底的"只在搜索页生效"需要搜索页祖先 ID，留待后续。）
-        Rule(Settings.KEY_UI_SEARCH_AD, "搜索推广",
-            listOf("SearchAd", "SearchPromo"), listOf("广告", "推广"),
-            excludeIdNames = listOf("b5w"),
-            // ⭐ R148 治本：限定在搜索类 Activity 内生效。之前没有任何页面门禁，
-            // "广告/推广"两个短词在设置页命中了「定向广告推送」「互动广告管理」
-            // 「广告应用下载清单」三行标题（用户实锤：关掉本开关这三行才恢复）。
-            requireActivityName = "Search",
-            // ⭐ R146：搜索推广按"广告/推广"匹配，会连隐私设置里的开关标题一起藏
-            // （「定向广告推送」「互动广告管理」），导致设置页出现只剩开关的空白行。
-            // 真机日志实锤：UI净化[搜索推广] 即时预隐藏 text="定向广告推送" id=hsb
-            excludeTextKeywords = listOf(
-                "定向广告推送", "互动广告管理", "广告数量", "广告与您的相关度", "互动广告",
-                // 设置页第三处：关闭搜索推广后这一行标题才回来（真机实锤）
-                "广告应用下载清单"
-            )),
-        Rule(Settings.KEY_UI_SEARCH_BANNER, "搜索推广Banner",
-            listOf(), listOf(), idNames = listOf("gu6"),
-            minYRatio = 0.20f, hideParentLevels = 2,
-            requireActivityName = "Search"),
-        // ⭐ R100：搜索页默认页下方的**频道推荐区**（推荐/周榜/次元/AI… tab + 卡片列表）。
-        // 祖先链真机实锤（模块内遍历，adb 的 uiautomator/dumpsys 都被该页动画挡住）：
-        //   KGUIFrameLayout/gu7 < FrameLayout < ViewPager/**gue** < FrameLayout/**gub**
-        //     < LinearLayout < TouchScrollView/**e1k** < RelativeLayout/gtz
-        // `gub` 包住整个频道区（tab 栏 + 内容页），`gue` 是频道 tab 的 pager。
-        // 用 ancestorIdNames=["e1k"] 限定**只在搜索页**生效 —— gub/gue 是短混淆 id，
-        // 别处可能有同名节点（铁律：同类同 id 跨页复用是最大误伤源）。
-        Rule(Settings.KEY_UI_SEARCH_CHANNEL, "搜索页频道推荐",
-            listOf(), listOf(), idNames = listOf("gub", "gue"),
-            ancestorIdNames = listOf("e1k"),
-            requireActivityName = "Search"),
-        Rule(Settings.KEY_UI_MEMBER_BAR, "会员栏",
-            listOf("VipBar", "MemberBar", "VipBanner"), listOf("开通会员", "开通概念版", "即将过期", "自动续费")),
-        Rule(Settings.KEY_UI_MEMBER_WIDGET, "会员控件",
-            listOf("VipWidget", "MemberWidget", "VipEntry", "TmeMaskAdDialog"),
-            listOf("立即开通", "领取会员")),
-        Rule(
-            Settings.KEY_UI_PLUS, "右下角加号",
-            listOf("PlusEntry", "FloatEntry", "PlusButton", "FabEntry", "KGTransImageView"),
-            listOf(),
-            floatArrayOf(0.78f, 0.60f)
-        ),
-        Rule(Settings.KEY_UI_INVITE, "邀请提示",
-            listOf("InviteTip", "InviteView"), listOf("邀请好友", "三个月会员", "邀好友", "组队领"),
-            // ⚠️ ID 门禁（真机实锤 10-12）：feed 推荐语槽位 b5w 的文案可能包含
-            // "组队领…VIP"（用户推荐语），无门禁会把**正常推荐卡文案**当成邀请
-            // 提示隐藏，且发生在已绘制之后（闪现）。同 b6b/b5w 门禁思路。
-            excludeIdNames = listOf("b5w")),
-        Rule(Settings.KEY_UI_LAB, "概念实验室",
-            listOf("ConceptLab", "Laboratory", "LabEntry"), listOf("概念实验室"),
-            sectionMode = true, useCardHide = true),
-        Rule(Settings.KEY_UI_LOGIN_GUIDE, "登录引导",
-            listOf("LoginGuide", "GuideLogin", "LoginTip"), listOf("登录后畅听", "立即登录")),
-        Rule(Settings.KEY_UI_FREE_LISTEN_ENTRY, "免费听入口",
-            listOf(), listOf(), idNames = listOf("dka")),
-        Rule(Settings.KEY_UI_FREE_LISTEN_ICON, "免费听图标",
-            listOf(), listOf(), idNames = listOf("dg0"), maxYRatio = 0.12f),
-            // ⚠️ 不再连父藏 dg1（2026-10-15 真机 A/B 实锤）：dg1(HnVisualEffectLayout)
-            // 虽然只有 84×84（免图标位），但酷狗效果引擎内部联动——dg1 被藏后
-            // **发现页整页背景渐变（含顶栏）消失变纯白**（用户报「顶栏背景不见了」）。
-            // R54 会话曾误归因给 unclipContentPadding 并用顶栏玻璃遮住，玻璃移除后
-            // 问题重现才定位到真因。只藏 dg0 自身，dg1 残留与否真机验证后再定。
-        Rule(Settings.KEY_UI_MINE_TAB_BAR, "我的页分类栏",
-            listOf("MineSpecialTabView"), listOf()),
-        Rule(Settings.KEY_UI_MINE_EARN, "我的页赚钱入口",
-            listOf(), listOf(), idNames = listOf("dk_"),
-            // ⭐ R72 定稿：只靠 `ancestorClass` + `requireMinePage` 两道门禁。
-            //   真机 dump 实锤（v5.2.9）：发现页顶栏的 dk_（乐库 tab）与我的页顶栏的 dk_
-            //   （赚钱入口）**同类同 ID**（都是 MainTopImageView），但**祖先链不同**——
-            //   发现页那支是 ConstraintLayout→FrameLayout→MainFragmentViewPage（**无** TwoViewSwitchLayout），
-            //   我的页那支挂在 TwoViewSwitchLayout 下。尺寸旁证：102x54 vs 102x144。
-            //   ⚠️ R66 曾在此加 `excludeClassNames=["MainTopImageView"]`，是**误诊**：
-            //      R66 那条 `严格=是 102x144` 其实是**赚钱入口自己被藏晚了 1 帧**，
-            //      被误判成"误伤乐库 tab" ⇒ 按类排除 = 把真目标一起废掉
-            //      （用户实锤"我的页顶栏赚钱又出现了"）。已回退。
-            //   ⚠️ 同时**去掉 `requireSiblingIdName="dk5"`**：已被 ancestorClass 覆盖，且
-            //      **挂载瞬间兄弟 dk5 尚未 addView ⇒ 门禁必失败 ⇒ 只能等扫描才藏 ⇒ 闪现**。
-            ancestorClass = "TwoViewSwitchLayout"),
-            // ⭐ R74：**去掉 `requireMinePage`**。R72 的 dump 已证明 `ancestorClass` 足以区分
-            //   （发现页那支祖先链里没有 TwoViewSwitchLayout）；而页面门禁的副作用是：
-            //   **切回发现页时会把它当"门禁失败"还原** ⇒ 赚钱入口被画出来（严格=是 102x144）
-            //   ⇒ 下次扫描再藏 ⇒ 闪现。去掉后它挂载即藏、跨页保持，不再有还原动作。
-        // 我的页白卡内的两行推广（Round 18 实锤：ist=福利与活动/天天签到兑免费
-        // VIP，bsb=免费听/全天会员免费领/领会员；关键词规则只隐了 bsa/c6n 两个
-        // TextView，残留「免费听」文字+进度条 = 半隐藏残迹）——按行容器整条塌缩
-        Rule(Settings.KEY_UI_MINE_SIGN_BAR, "我的页签到/领会员条",
-            listOf(), listOf(), idNames = listOf("ist", "bsb"),
-            collapseHeight = true),
-        // 会员角标与入口：⚠️ 只藏角标图片 c6u，**不能藏 iv5**——iv5 是白卡
-        // 右上角的白色底板（GONE 后露出页面底色 = 白卡右上角缺口，Round 19
-        // 用户实锤）；apj=昵称右侧「会员中心」图标（KGTransImageView，desc
-        // 命中但不走 setText/TextView 分支，必须 ID 制导）
-        Rule(Settings.KEY_UI_MINE_MEMBER_BADGE, "我的页会员角标",
-            listOf(), listOf(), idNames = listOf("c6u", "apj")),
-        // 账号徽章：c6b=Lv.1 等级容器（iue/iug），ivf=「勋章」胶囊
-        Rule(Settings.KEY_UI_MINE_MEDAL, "我的页等级勋章",
-            listOf(), listOf(), idNames = listOf("c6b", "ivf")),
-        // 我的页右上角搜索图标（Round 26，用户要求移除）：apg 是我的页顶栏
-        // 四图标容器（dg0/f5i/c67/f5j = 免|搜索|信息中心|设置），只摘 f5i。
-        // ⚠️ 用**父容器 ID 门禁**而非页面门禁：父容器在挂载瞬间就确定 → 绘制
-        // 前即时预隐藏，不会像 requireMinePage 那样翻页时先闪一下再藏。
-        Rule(Settings.KEY_UI_MINE_SEARCH, "我的页搜索图标",
-            listOf(), listOf(), idNames = listOf("f5i"),
-            parentIdNames = listOf("apg")),
-        // 我的页右上角「信息中心/设置」图标的红点（Round 46，真机 dump 实锤）：
-        // 信息中心 c67 的红点 = 无 ID FrameLayout → c6_(红点底 ImageView)+ip9(数字
-        // TextView)；设置 f5j 的红点 = f5k(15x15 小圆点)。只藏叶子，图标本体保留。
-        // ⚠️ 必须带 apg **祖先**门禁（新 ancestorIdNames）：c6_/ip9/f5k 是通用混淆
-        // ID（红点数字/小圆点随处可能复用），且直接父容器都无 ID（父门禁够不着）——
-        // 无门禁会全局误伤。
-        Rule(Settings.KEY_UI_MINE_BADGE, "我的页顶栏红点",
-            listOf(), listOf(), idNames = listOf("c6_", "ip9", "f5k"),
-            ancestorIdNames = listOf("apg")),
-        // ⚠️ R87：底栏有**两套**角标容器（都在 kg 导航栏布局 res/z/ae5.xml，
-        // 5 个 id 均只此一处使用、零复用）：
-        //   at6 = 红点/数字角标（at8 红点图 + at5 数字）
-        //   at7 = **文字标签角标**（at4 带红底 drawable + padding 3dp）← 「即将过期」
-        // 原先只列 at6 ⇒ 「即将过期」这类文字标签整块裸露（用户实锤：
-        // 胶囊右上角红色「即将过期」，07:49 首启截图 g10 实证）。
-        // at7 在 XML 里默认 GONE、由代码决定 visible，只在"要弹推广角标"时才出现。
-        Rule(Settings.KEY_UI_TAB_BADGE, "TAB角标",
-            listOf(), listOf(), idNames = listOf("at6", "at7"), minYRatio = 0.85f),
-        Rule(Settings.KEY_UI_SEARCH_CLOSE, "搜索推广关闭钮",
-            listOf(), listOf(), idNames = listOf("gu3"), minYRatio = 0.15f,
-            hideParentLevels = 1),
-        Rule(Settings.KEY_UI_SEARCH_INDICATOR, "搜索推广指示器",
-            listOf(), listOf(), idNames = listOf("gu4"), minYRatio = 0.15f),
-        Rule(Settings.KEY_UI_SEARCH_VIP_BAR, "搜索结果VIP条",
-            listOf(), listOf(), idNames = listOf("ezd"), minYRatio = 0.10f),
-        Rule(Settings.KEY_UI_VIP_EXPIRE, "VIP过期胶囊",
-            listOf(), listOf(), idNames = listOf("c6a")),
-        Rule(Settings.KEY_UI_VIP_LOOK_BAR, "VIP去看看残条",
-            listOf(), listOf(), idNames = listOf("f96")),
-        Rule(Settings.KEY_UI_PLAY_PUBLISH_TIP, "发布提示",
-            listOf(), listOf("使用此音乐发布", "使用此应用发布")),
-        Rule(Settings.KEY_UI_CHANNEL, "频道推荐区块",
-            listOf(), listOf("频道推荐"), sectionMode = true, useCardHide = true),
-        Rule(Settings.KEY_UI_FREE_LISTEN_BLOCK, "免费听区块",
-            listOf(), listOf("免费听"), sectionMode = true, useCardHide = true,
-            excludeIdNames = listOf("dka")),
-        Rule(Settings.KEY_UI_DISCOVER_BANNER_SLOT, "发现页Banner槽位",
-            listOf(), listOf(), idNames = listOf("ela")),
-    )
+    /** 全部规则（由各 *Rules 文件提供，此处仅做聚合） */
+    private val RULES: List<UiRule> = buildList {
+        addAll(adsRules)
+        addAll(memberRules)
+        addAll(playRules)
+        addAll(mineRules)
+        addAll(searchRules)
+    }
 
     // 广告 SDK 专属视图（出生拦截 + 挂载拦截双保险）
     private val PERSISTENT_HIDE = listOf(
@@ -470,7 +199,7 @@ object UiCleaner {
     private val labRule by lazy { RULES.first { it.key == Settings.KEY_UI_LAB } }
     private val plusRule by lazy { RULES.first { it.key == Settings.KEY_UI_PLUS } }
     private val tabBadgeRule by lazy { RULES.first { it.key == Settings.KEY_UI_TAB_BADGE } }
-    private fun ruleFor(featureKey: String): Rule = RULES.first { it.key == featureKey }
+    private fun ruleFor(featureKey: String): UiRule = RULES.first { it.key == featureKey }
     private val freeListenRule by lazy { RULES.first { it.key == Settings.KEY_UI_FREE_LISTEN_ENTRY } }
     private val freeListenBlockRule by lazy { RULES.first { it.key == Settings.KEY_UI_FREE_LISTEN_BLOCK } }
     private val channelRule by lazy { RULES.first { it.key == Settings.KEY_UI_CHANNEL } }
@@ -495,9 +224,9 @@ object UiCleaner {
      * 级搜索，每 4s 一次、启动窗口内**每帧**一次 → 主线程持续被占满。
      * 同一个 Class 的类名判定结果恒定，记忆化后每类只算一次，其余为 map 命中。
      */
-    private val classRuleCache = ConcurrentHashMap<String, List<Rule>>()
+    private val classRuleCache = ConcurrentHashMap<String, List<UiRule>>()
 
-    private fun classRulesFor(className: String): List<Rule> {
+    private fun classRulesFor(className: String): List<UiRule> {
         classRuleCache[className]?.let { return it }
         val hit = CLASS_RULES.filter { r -> r.classKeywords.any { className.contains(it, ignoreCase = true) } }
         if (classRuleCache.size < 4096) classRuleCache[className] = hit
@@ -637,7 +366,7 @@ object UiCleaner {
     private val ID_RULE_RECHECK_TICKS = longArrayOf(50, 150, 300, 600, 1000)
 
     // ID→规则 预索引（挂载钩子热路径 O(1) 查表）
-    private val idRuleMap: Map<String, List<Rule>> = buildMap {
+    private val idRuleMap: Map<String, List<UiRule>> = buildMap {
         for (rule in RULES) {
             for (id in rule.idNames) {
                 put(id, (get(id) ?: emptyList()) + rule)
@@ -646,13 +375,13 @@ object UiCleaner {
     }
 
     // ===== 挂载复核统一调度器 =====
-    private data class RecheckTask(val view: View, val rule: Rule, val atUptime: Long, val tick: Long)
+    private data class RecheckTask(val view: View, val rule: UiRule, val atUptime: Long, val tick: Long)
 
     private val recheckQueue = PriorityQueue<RecheckTask>(compareBy { it.atUptime })
     private val recheckSeen = HashSet<Triple<View, Rule, Long>>()
     private var recheckPumpRunning = false
 
-    private fun scheduleIdRecheck(view: View, rule: Rule, delay: Long) {
+    private fun scheduleIdRecheck(view: View, rule: UiRule, delay: Long) {
         val key = Triple(view, rule, delay)
         synchronized(recheckSeen) {
             if (!recheckSeen.add(key)) return
@@ -692,7 +421,7 @@ object UiCleaner {
     }
 
     /** 挂载多帧复核任务体 */
-    private fun executeIdRecheck(view: View, rule: Rule) {
+    private fun executeIdRecheck(view: View, rule: UiRule) {
         try {
             if (!view.isAttachedToWindow) return
             if (!matchIdRule(view, rule)) {
@@ -1387,7 +1116,7 @@ object UiCleaner {
      * @return true 表示"命中了模块自身面板，本视图应停止后续规则判定"
      */
     private fun applyRuleToView(
-        view: View, rule: Rule, className: String, rn: String?, text: CharSequence?,
+        view: View, rule: UiRule, className: String, rn: String?, text: CharSequence?,
         activity: Activity, hidden: IntArray
     ): Boolean {
         if (!Settings.isFeature(activity, rule.key)) return false
@@ -1584,7 +1313,7 @@ object UiCleaner {
         }
     }
 
-    private fun ruleStillMatches(v: View, rule: Rule): Boolean {
+    private fun ruleStillMatches(v: View, rule: UiRule): Boolean {
         // ID 制导：ID 名必须仍匹配
         if (rule.idNames.isNotEmpty()) {
             val rn = resourceName(v) ?: return false
@@ -1614,7 +1343,7 @@ object UiCleaner {
         return true
     }
 
-    private fun subtreeHasId(v: View?, rule: Rule, depth: Int): Boolean {
+    private fun subtreeHasId(v: View?, rule: UiRule, depth: Int): Boolean {
         if (v == null || depth > MAX_DEPTH) return false
         val rn = resourceName(v)
         if (rn != null && rn in rule.idNames) return true
@@ -1624,7 +1353,7 @@ object UiCleaner {
         return false
     }
 
-    private fun subtreeStillMatches(v: View?, rule: Rule, depth: Int): Boolean {
+    private fun subtreeStillMatches(v: View?, rule: UiRule, depth: Int): Boolean {
         if (v == null || depth > MAX_DEPTH) return false
         val t = extractText(v)
         if (t != null && rule.textKeywords.any { t.contains(it) }) return true
@@ -2561,7 +2290,7 @@ object UiCleaner {
     }
 
     /** 标题行 INVISIBLE（保锚定链不塌陷），并记代际 */
-    private fun applyTitleRowHide(title: TextView, rule: Rule) {
+    private fun applyTitleRowHide(title: TextView, rule: UiRule) {
         try {
             if (title.visibility != View.INVISIBLE) {
                 title.visibility = View.INVISIBLE
@@ -3151,7 +2880,7 @@ object UiCleaner {
     }
 
     /** 会员推广卡：爬升到全宽卡容器隐藏（页面级容器即停防整页误伤） */
-    private fun hideMemberCard(textView: TextView, rule: Rule) {
+    private fun hideMemberCard(textView: TextView, rule: UiRule) {
         try {
             var target: View = textView
             var node = textView.parent as? ViewGroup
@@ -3206,7 +2935,7 @@ object UiCleaner {
     private val savedHeights = WeakHashMap<View, Int>()
 
     /** feed 槽位容器隐藏（ela 专用）：GONE+height=0 彻底塌缩 */
-    private fun hideFeedItemSlot(view: View, rule: Rule): Boolean {
+    private fun hideFeedItemSlot(view: View, rule: UiRule): Boolean {
         try {
             val parent = view.parent as? ViewGroup
             val target: ViewGroup? = when {
@@ -3245,7 +2974,7 @@ object UiCleaner {
      * 整行推广条：只 GONE 会被父容器按原高留白洞）；否则按 hideParentLevels
      * 爬升后 GONE。返回是否本次真正改动。
      */
-    private fun hideByIdRule(view: View, rule: Rule, src: String = ""): Boolean {
+    private fun hideByIdRule(view: View, rule: UiRule, src: String = ""): Boolean {
         return try {
             // ⚠️ 类名排除门禁（最后一道闸，10-12）：把所有调用路径都兜住——
             // 真机取证发现「我的页赚钱入口」(dk_) 在页面门禁 apply→restore→
@@ -3403,7 +3132,7 @@ object UiCleaner {
      * 命中白名单才爬升，否则返回 0（只藏自身）——防止同 ID 跨页复用时把
      * 无关的父容器（及其同层兄弟）整块牵走。父容器缺失/无 ID 视为不命中。
      */
-    private fun climbLevels(view: View, rule: Rule): Int {
+    private fun climbLevels(view: View, rule: UiRule): Int {
         val lv = rule.hideParentLevels
         if (lv <= 0 || rule.climbParentIdNames.isEmpty()) return lv
         val p = view.parent as? View ?: return 0
@@ -3412,7 +3141,7 @@ object UiCleaner {
     }
 
     /** 挂载期即可判的附加门禁：兄弟 ID 要求（赚钱 tab dk_ 必须与 dk5 同在） */
-    private fun gateOk(view: View, rule: Rule): Boolean {
+    private fun gateOk(view: View, rule: UiRule): Boolean {
         // 父容器 ID 门禁（Round 26）：mount 期即可判定，比页面门禁稳定
         if (rule.parentIdNames.isNotEmpty()) {
             val p = view.parent as? View ?: return false
@@ -3642,7 +3371,7 @@ object UiCleaner {
     private const val GATE_DIAG = false
 
     /** 门禁求值快照：mainPageKnown/index、兄弟 ID 是否在、位置法原始判据 */
-    private fun gateDiag(v: View, rule: Rule): String {
+    private fun gateDiag(v: View, rule: UiRule): String {
         if (!GATE_DIAG) return ""
         return try {
             val sb = StringBuilder(" known=").append(mainPageKnown).append(" idx=").append(mainPageIndex)
@@ -3680,7 +3409,7 @@ object UiCleaner {
         }
     }
 
-    private fun hideBlockContainer(textView: TextView, rule: Rule): Boolean {
+    private fun hideBlockContainer(textView: TextView, rule: UiRule): Boolean {
         try {
             // ⚠️ 双重铁律（两轮真机实锤）：
             // 1. 必须爬到 item 根（回收容器直接子）——只藏 item 内部容器，
@@ -3732,7 +3461,7 @@ object UiCleaner {
     }
 
     /** 整卡模式：先藏容器，再 50/150/400ms 三档补爬（文本晚于布局到达） */
-    private fun hideCardWithRecheck(textView: TextView, rule: Rule): Boolean {
+    private fun hideCardWithRecheck(textView: TextView, rule: UiRule): Boolean {
         val did = hideBlockContainer(textView, rule)
         for (delay in longArrayOf(50, 150, 400)) {
             mainHandler.postDelayed({
@@ -3999,7 +3728,7 @@ object UiCleaner {
 
     /** ID 制导规则的完整判定：ID名+区域+祖先；未布局时跳过区域判定 */
     private fun matchIdRule(
-        view: View, rule: Rule, skipPageGate: Boolean = false, fromMount: Boolean = false,
+        view: View, rule: UiRule, skipPageGate: Boolean = false, fromMount: Boolean = false,
     ): Boolean {
         val rn = resourceName(view) ?: return false
         if (rn !in rule.idNames) return false
