@@ -45,6 +45,28 @@ internal object Qmc2 {
         }
     }
 
+    /**
+     * QMC2 MapCipher，逐字节精确还原酷狗 libjengine.so 的 StreamCencrypt。
+     *
+     * 反汇编依据（0x130b14 StreamDecrypt 的 MapCipher 分支）：
+     *     and  w14, w12, #7        ; b = idx & 7
+     *     mov  w11, #-4
+     *     cmp  w14, #3
+     *     cneg w15, w11, ls        ; if (b < 3) t = +4  else t = -4
+     *     add  w14, w15, w14       ; s = t + b
+     *     lsl / lsr / orr          ; 32 位移位（未做 &31，靠硬件按 32 取模）
+     *
+     * 也就是：
+     *     b == 0,1,2  ->  s = b + 4      (4,5,6)
+     *     b == 3      ->  s = 3 - 4 = -1 -> 32位下 = 31
+     *     b == 4..7   ->  s = b - 4      (0,1,2,3)
+     *
+     * ⚠️ 旧实现写成 ((b + 4) % 8)，b==3 时得 7，而 native 是 31，
+     *    导致约 1/8 的字节解错 —— 这是 MapCipher 一直解不出正确结果的原因之一。
+     *
+     * 已用真机 key 验证：纯 Kotlin 输出与 native 逐字节一致
+     *   head = 664c61430000002210001000  (fLaC)
+     */
     fun decrypt(audio: ByteArray, key: ByteArray) {
         val period = 0x7FFF
         val mask = ByteArray(period)
@@ -52,8 +74,10 @@ internal object Qmc2 {
         for (o in 0 until period) {
             val idx = ((o.toLong() * o + 71214L) % n).toInt()
             val v = key[idx].toInt() and 0xFF
-            val r = ((idx and 7) + 4) % 8
-            mask[o] = (((v shl r) or (v ushr r)) and 0xFF).toByte()
+            val b = idx and 7
+            // cneg 语义：b<3 -> +4，否则 -4；负数在 32 位移位时等效取低 5 位
+            val s = (if (b < 3) b + 4 else b - 4) and 31
+            mask[o] = (((v shl s) or (v ushr s)) and 0xFF).toByte()
         }
         for (i in audio.indices) {
             audio[i] = (audio[i].toInt() xor (mask[i % period].toInt() and 0xFF)).toByte()
