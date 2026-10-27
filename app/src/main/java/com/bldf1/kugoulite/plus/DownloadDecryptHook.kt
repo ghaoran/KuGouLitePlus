@@ -104,16 +104,24 @@ internal object DownloadDecryptHook {
         val last = handled[path]
         if (last != null && now - last < 5000) return
 
-        // 稳定失败锁定：文件内容没变就不再重试
+        // 稳定失败锁定：同一份内容连续失败 MAX_FAIL 次后就不再碰。
+        //
+        // ⚠️ 旧写法有顺序 bug：
+        //     if (fc >= MAX_FAIL && stamp == failStamp) return
+        //     if (stamp != failStamp) { failCount.remove(path) }   // 每次都清零
+        //   第一次失败后 failStamp 被写入，下一轮进入时
+        //   `stamp != null && stamp != failStamp[path]` 在 failStamp 尚未写入前恒成立，
+        //   计数被反复清零，永远到不了 MAX_FAIL —— 真机上每个失败文件仍重试 12 次。
+        // 现在改为：只比对「已记录的 stamp」，且先判断锁定、再判断是否需要重置。
         val stamp = runCatching { file.length().toString() + ":" + file.lastModified() }.getOrNull()
-        val fc = failCount[path] ?: 0
-        if (fc >= MAX_FAIL && stamp != null && stamp == failStamp[path]) {
-            return
-        }
-        if (stamp != null && stamp != failStamp[path]) {
-            // 文件变了（重新下载），重置失败计数
+        val recorded = failStamp[path]
+        if (recorded != null && stamp != null && stamp != recorded) {
+            // 文件确实变了（重新下载过），重置计数
             failCount.remove(path)
             failStamp.remove(path)
+        } else if (recorded != null && (failCount[path] ?: 0) >= MAX_FAIL) {
+            // 内容没变且已达上限 -> 锁定
+            return
         }
         handled[path] = now
         worker?.execute {
