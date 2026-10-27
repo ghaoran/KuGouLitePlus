@@ -25,6 +25,7 @@ internal object MggKeyHook {
     fun install(module: XposedModule, classLoader: ClassLoader) {
         hookQuery(module, classLoader)
         hookGetter(module, classLoader)
+        hookSaver(module, classLoader)
         ModuleLog.log("$TAG: Hook 已安装")
     }
 
@@ -62,6 +63,95 @@ internal object MggKeyHook {
             ModuleLog.log("$TAG: query hook 失败 " + t.message)
         }
     }
+
+    /**
+     * Hook y.d(String hash, String key) —— 真正的 key 落库入口。
+     *
+     * 反编译确认（5.3.1，y 类方法表）：
+     *   d(Ljava/lang/String;Ljava/lang/String;)V
+     *   日志串："MggKeyManger" "saveMggKey, hash:%s, keyEmpty:%b, keyLength:%d, result:%b"
+     *
+     * 为什么这个最重要：
+     *   job.p$c.query() 里有一条 IPC 异步分支
+     *       if (a.INSTANCE.y("queryMggKey")) { y.b(j,hash,quality); }  // 返回值丢弃
+     *       else                            { strA = y.c(...); }
+     *   走 IPC 时 query() 直接返回空串，hook 什么都抓不到。
+     *   但无论走哪条路，最终拿到 key 后都会调用 y.d(hash, key) 写缓存，
+     *   所以 hook d() 能覆盖全部来源（同步 + IPC 异步 + 批量）。
+     */
+    private fun hookSaver(module: XposedModule, classLoader: ClassLoader) {
+        try {
+            val cls = Class.forName("com.kugou.framework.service.util.y", false, classLoader)
+            var n = 0
+
+            try {
+                val m = cls.getDeclaredMethod("d", String::class.java, String::class.java)
+                module.hook(m)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        try {
+                            val a0 = chain.args[0] as? String
+                            val a1 = chain.args[1] as? String
+                            val hash: String?
+                            val key: String?
+                            if (a0 != null && a0.length == 32 && a0.isHex()) {
+                                hash = a0; key = a1
+                            } else if (a1 != null && a1.length == 32 && a1.isHex()) {
+                                hash = a1; key = a0
+                            } else {
+                                hash = a0; key = a1
+                            }
+                            if (!hash.isNullOrEmpty() && !key.isNullOrEmpty()) {
+                                remember(hash.lowercase(), key)
+                            }
+                        } catch (_: Throwable) {
+                        }
+                        result
+                    }
+                n++
+            } catch (_: Throwable) {
+            }
+
+            try {
+                val m = cls.getDeclaredMethod("e", java.util.List::class.java)
+                module.hook(m)
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept { chain ->
+                        val result = chain.proceed()
+                        try {
+                            val list = chain.args[0] as? List<*>
+                            list?.forEach { item ->
+                                if (item == null) return@forEach
+                                var hash: String? = null
+                                var key: String? = null
+                                for (fl in item.javaClass.declaredFields) {
+                                    try {
+                                        fl.isAccessible = true
+                                        val v = fl.get(item) as? String ?: continue
+                                        if (hash == null && v.length == 32 && v.isHex()) hash = v
+                                        else if (key == null && v.length >= 64) key = v
+                                    } catch (_: Throwable) {
+                                    }
+                                }
+                                if (hash != null && key != null) remember(hash.lowercase(), key)
+                            }
+                        } catch (_: Throwable) {
+                        }
+                        result
+                    }
+                n++
+            } catch (_: Throwable) {
+            }
+
+            ModuleLog.log("$TAG: y 保存类 hook 完成 " + n + " 个方法")
+        } catch (t: Throwable) {
+            ModuleLog.log("$TAG: y 保存类 hook 失败 " + t.message)
+        }
+    }
+
+    private fun String.isHex(): Boolean =
+        all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }
 
     /** Hook y.a(String) / y.c(long,String,String)，二者都可能返回 key */
     private fun hookGetter(module: XposedModule, classLoader: ClassLoader) {
