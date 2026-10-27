@@ -238,9 +238,7 @@ internal object KgmDecryptor {
             }
             if (!stripped) return
             val t = File(file.parentFile, b + "." + fmt)
-            if (!t.exists()) {
-                try { if (file.renameTo(t)) ModuleLog.log("已重命名为 " + t.name) } catch (_: Throwable) {}
-            }
+            moveTo(file, t)
             return
         }
         var base = name
@@ -266,12 +264,60 @@ internal object KgmDecryptor {
         }
         base = base.trimEnd('.')
         val target = File(file.parentFile, base + "." + fmt)
-        if (target.exists()) return
+        moveTo(file, target)
+    }
+
+    /**
+     * 把解密后的成品 [from] 落到最终名 [to]。
+     *
+     * 旧实现有两处硬伤（真机已复现）：
+     *   1) `if (!t.exists()) { rename }`  —— 目标已存在就什么都不做，
+     *      源文件（带 .kgm/.kgg 中缀的垃圾）永久残留。
+     *   2) `if (target.exists()) return`  —— 同上，且更早返回。
+     * 结果是 Music 目录里累积了一堆 xxx.kgg.flac / xxx.kgm.flac。
+     *
+     * 新逻辑：
+     *   - 目标是同一个文件 -> 直接返回
+     *   - 目标已存在：
+     *       a) 目标本身是合法音频且不比源小 -> 说明已经有更好的成品，
+     *          删掉本次的加密源文件，避免目录污染；
+     *       b) 否则（目标残缺/损坏）-> 删掉目标再搬过去。
+     *   - 重命名失败（跨分区等）-> 退化为复制后删除。
+     */
+    private fun moveTo(from: File, to: File) {
         try {
-            if (file.renameTo(target)) {
-                ModuleLog.log("已重命名为 " + target.name)
+            if (from.absolutePath == to.absolutePath) return
+            if (!from.isFile) return
+            if (to.exists()) {
+                val toFmt = detectFormat(to)
+                // 目标已是合法音频且不小于源：保留目标，清掉本加密源
+                if (toFmt != null && to.length() >= from.length()) {
+                    if (from.delete()) {
+                        ModuleLog.log("目标已存在且完整，清理加密源: " + from.name)
+                    }
+                    return
+                }
+                // 目标残缺/不是音频：删掉后重建
+                ModuleLog.log("目标残缺(" + (toFmt ?: "非法") + " " + to.length() +
+                    "B)，替换: " + to.name)
+                if (!to.delete()) {
+                    ModuleLog.log("无法删除残缺目标，跳过: " + to.name)
+                    return
+                }
             }
-        } catch (_: Throwable) {
+            if (from.renameTo(to)) {
+                ModuleLog.log("已重命名为 " + to.name)
+            } else {
+                // 跨分区或权限问题：复制后删除
+                to.outputStream().use { out -> from.inputStream().use { it.copyTo(out) } }
+                if (from.delete()) {
+                    ModuleLog.log("已复制并重命名为 " + to.name)
+                } else {
+                    ModuleLog.log("已复制为 " + to.name + "，源文件删除失败: " + from.name)
+                }
+            }
+        } catch (t: Throwable) {
+            ModuleLog.log("重命名失败 " + from.name + ": " + t.message)
         }
     }
 
@@ -332,6 +378,14 @@ internal object KgmDecryptor {
             if (fmt == null) {
                 tmp.delete()
                 ModuleLog.log("KGM 解密失败(魔数不符): " + file.name)
+                return null
+            }
+            // 完整性校验：真机出现过 1.2MB 的残缺 flac（源文件下载中断）。
+            // 解密结果比源文件小很多，说明源文件本身不完整，不应当作成品落盘。
+            if (tmp.length() < file.length() * 0.9) {
+                ModuleLog.log("解密结果偏小，疑似源文件不完整: " + file.name +
+                    " 源=" + file.length() + "B 解出=" + tmp.length() + "B，已丢弃")
+                tmp.delete()
                 return null
             }
             if (!tmp.renameTo(file)) {

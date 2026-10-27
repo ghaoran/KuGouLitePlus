@@ -33,6 +33,19 @@ internal object DownloadDecryptHook {
     /** 已处理过的绝对路径，避免重复解密 */
     private val handled = ConcurrentHashMap<String, Long>()
 
+    /**
+     * 失败计数：同一路径失败超过 [MAX_FAIL] 次就不再尝试。
+     *
+     * 真机问题：`.kgg` 拿不到运行时 key 时会稳定失败，而 handled 只做 5 秒去重，
+     * 于是每轮扫描都重试一遍，日志里同一文件反复出现
+     *   "QMC2 跳过(无 key)" / "KGM 解密失败(魔数不符)"
+     * 既刷屏又白耗 CPU。锁定后只在文件发生变化（size/mtime 改变，
+     * 说明被重新下载）时才重新放行。
+     */
+    private val failCount = ConcurrentHashMap<String, Int>()
+    private val failStamp = ConcurrentHashMap<String, String>()
+    private const val MAX_FAIL = 3
+
     private var worker: java.util.concurrent.ExecutorService? = null
 
     /** FileOutputStream 实例 → 落盘路径（仅用于观测，不持有强引用） */
@@ -90,6 +103,18 @@ internal object DownloadDecryptHook {
         val now = System.currentTimeMillis()
         val last = handled[path]
         if (last != null && now - last < 5000) return
+
+        // 稳定失败锁定：文件内容没变就不再重试
+        val stamp = runCatching { file.length().toString() + ":" + file.lastModified() }.getOrNull()
+        val fc = failCount[path] ?: 0
+        if (fc >= MAX_FAIL && stamp != null && stamp == failStamp[path]) {
+            return
+        }
+        if (stamp != null && stamp != failStamp[path]) {
+            // 文件变了（重新下载），重置失败计数
+            failCount.remove(path)
+            failStamp.remove(path)
+        }
         handled[path] = now
         worker?.execute {
             try {
@@ -99,8 +124,19 @@ internal object DownloadDecryptHook {
                 if (ctx != null && !Settings.isFeature(ctx, Settings.KEY_AUTO_DECRYPT_DOWNLOAD)) {
                     return@execute
                 }
-                KgmDecryptor.decryptInPlace(file)
-                notifyMediaStore(file)
+                val ok = KgmDecryptor.decryptInPlace(file) != null
+                if (ok) {
+                    failCount.remove(file.absolutePath)
+                    failStamp.remove(file.absolutePath)
+                    notifyMediaStore(file)
+                } else {
+                    val n = (failCount[file.absolutePath] ?: 0) + 1
+                    failCount[file.absolutePath] = n
+                    if (stamp != null) failStamp[file.absolutePath] = stamp
+                    if (n == MAX_FAIL) {
+                        ModuleLog.log("$TAG: 连续失败 " + n + " 次，锁定不再重试: " + file.name)
+                    }
+                }
             } catch (t: Throwable) {
                 ModuleLog.log("$TAG: 处理失败 ${file.name} ${t.message}")
             }
