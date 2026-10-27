@@ -184,7 +184,7 @@ internal object MggKeyHook {
             "/data/user/0/$pkg/files/mmkv"
         )
         // MMKV 的 pattern: <base64(>=100字符)> <32位hex>
-        val re = Regex("[A-Za-z0-9+/=]{100,}\s+([0-9a-fA-F]{32})")
+        val re = Regex("[A-Za-z0-9+/=]{100,}[ \\t\\r\\n]+([0-9a-fA-F]{32})")
         for (d in dirs) {
             for (n in MMKV_FILES) {
                 val f = File(d, n)
