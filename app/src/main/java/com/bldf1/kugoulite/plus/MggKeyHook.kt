@@ -140,7 +140,69 @@ internal object MggKeyHook {
 
     fun keyFor(hash: String): String? {
         if (!loaded) load()
-        return keys[hash]
+        keys[hash]?.let { if (it.isNotEmpty()) return it }
+        // 运行时没抓到 -> 直接去 MMKV 读（酷狗 5.3.1 把 key 缓存在
+        //   /data/data/<pkg>/files/mmkv/mggkey_multi_process
+        // 里，以 "<704字符base64> <32位hash>" 形式明文排列）。
+        // 因为同一台机器上 MMKV 内容稳定，这里读到就缓存进内存，
+        // 避免每个文件都扫一遍。
+        val k = readFromMmkv(hash)
+        if (k != null) {
+            keys[hash] = k
+            ModuleLog.log("$TAG: MMKV 命中 hash=" + hash.take(16) + " len=" + k.length)
+        }
+        return k
+    }
+
+    /** MMKV 文件名（酷狗概念版 5.3.1 实测） */
+    private val MMKV_FILES = arrayOf(
+        "mggkey_multi_process", "mggkey", "common_multi_process"
+    )
+
+    /**
+     * 从 MMKV 原始字节里找 "<base64> <32位hex>" 配对。
+     *
+     * MMKV 的 value 是明文存储的（前面带一小段二进制头），
+     * 所以直接在原始字节里做文本扫描即可，无需解析 MMKV 格式。
+     */
+    @Volatile private var mmkvTried = false
+    @Volatile private var mmkvMap: Map<String, String> = emptyMap()
+
+    private fun readFromMmkv(hash: String): String? {
+        if (!mmkvTried) {
+            mmkvTried = true
+            mmkvMap = scanMmkv()
+        }
+        return mmkvMap[hash]
+    }
+
+    private fun scanMmkv(): Map<String, String> {
+        val out = HashMap<String, String>()
+        val pkg = "com.kugou.android.lite"
+        val dirs = arrayOf(
+            "/data/data/$pkg/files/mmkv",
+            "/data/user/0/$pkg/files/mmkv"
+        )
+        // MMKV 的 pattern: <base64(>=100字符)> <32位hex>
+        val re = Regex("[A-Za-z0-9+/=]{100,}\s+([0-9a-fA-F]{32})")
+        for (d in dirs) {
+            for (n in MMKV_FILES) {
+                val f = File(d, n)
+                if (!f.isFile) continue
+                try {
+                    val txt = String(f.readBytes(), Charsets.ISO_8859_1)
+                    for (m in re.findAll(txt)) {
+                        val h = m.groupValues[1].lowercase()
+                        val key = m.value.substringBefore(' ').trim()
+                        if (key.length >= 100) out[h] = key
+                    }
+                    ModuleLog.log("$TAG: MMKV $n 解析出 " + out.size + " 组 key")
+                } catch (t: Throwable) {
+                    ModuleLog.log("$TAG: 读 MMKV $n 失败 " + t.message)
+                }
+            }
+        }
+        return out
     }
 
     fun allKeys(): Map<String, String> = keys.toMap()
