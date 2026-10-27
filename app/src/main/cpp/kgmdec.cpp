@@ -4,7 +4,16 @@
 //
 // 反汇编确认的签名：
 //   CreateDecryption(const char* ekey, int len) -> StreamCencrypt*
-//   Decrypt(StreamCencrypt* self, char* buf, int len, uint64_t offset)
+//   Decrypt(StreamCencrypt* self, uint64_t offset, char* buf, int len)
+//
+// ⚠️ 参数顺序（0x130b14 StreamDecrypt 反汇编确认，2026-10）：
+//      x0 = this(StreamCencrypt*)
+//      x1 = offset  (u64，真实文件内偏移，用于生成密钥流位置)
+//      x2 = buf     (char*)
+//      x3 = len     (int)
+//   旧版本按 (self, buf, len, offset) 传参 -> x1/x2/x3 全错位，
+//   函数内部把 buf 指针当 offset、把 len 当指针写 -> 静默不改数据或崩溃。
+//   这是「调用成功但输出仍非 fLaC」的真正原因。
 #include <jni.h>
 #include <dlfcn.h>
 #include <android/log.h>
@@ -17,7 +26,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 typedef void* (*CreateDecryptionFn)(const char*, int);
-typedef void  (*DecryptFn)(void*, char*, int, unsigned long long);
+typedef int   (*DecryptFn)(void*, unsigned long long, char*, int);
 typedef void  (*DestroyFn)(void*);
 
 static CreateDecryptionFn g_create = nullptr;
@@ -67,6 +76,10 @@ Java_com_bldf1_kugoulite_plus_NativeH_nativeCreate(JNIEnv* env, jobject, jstring
     int len = (int)strlen(k);
     void* ctx = g_create(k, len);
     env->ReleaseStringUTFChars(ekey, k);
+    int klen = ctx ? *(int*)((char*)ctx + 8) : -1;
+    LOGI("CreateDecryption(ekeyLen=%d) -> %p  derivedKeyLen=%d branch=%s",
+         len, ctx, klen,
+         klen >= 0x12D ? "ProcessByRC4" : "MapCipher");
     LOGI("CreateDecryption(%d) -> %p", len, ctx);
     return (jlong)(intptr_t)ctx;
 }
@@ -77,9 +90,11 @@ Java_com_bldf1_kugoulite_plus_NativeH_nativeDecrypt(JNIEnv* env, jobject, jlong 
     if (!handle || !buf) return -1;
     jbyte* p = env->GetByteArrayElements(buf, nullptr);
     if (!p) return -1;
-    g_decrypt((void*)(intptr_t)handle, (char*)p + off, (int)len, (unsigned long long)pos);
+    // 顺序: (self, offset, buf, len)
+    int rc = g_decrypt((void*)(intptr_t)handle, (unsigned long long)pos,
+                       (char*)p + off, (int)len);
     env->ReleaseByteArrayElements(buf, p, 0);
-    return len;
+    return rc;
 }
 
 extern "C" JNIEXPORT void JNICALL

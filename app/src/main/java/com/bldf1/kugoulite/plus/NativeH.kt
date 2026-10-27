@@ -109,7 +109,10 @@ internal object NativeH {
                 dst.parentFile?.mkdirs()
                 dst.outputStream().buffered().use { out ->
                     val buf = ByteArray(BLOCK)
-                    var pos = 0L
+                    // offset 必须是「真实文件内偏移」，从 headerLen 起算。
+                    // StreamDecrypt 用 offset 决定 RC4/MapCipher 的密钥流位置，
+                    // 传 0 会从头加密钥流 -> 首字节必错。
+                    var pos = hlen.toLong()
                     while (true) {
                         val n = input.read(buf)
                         if (n <= 0) break
@@ -128,25 +131,23 @@ internal object NativeH {
     /**
      * 读 audio_hash。
      *
-     * 酷狗在 0x48 处存的是 hash 的 **ASCII 十六进制串**
-     * （如 "6163636132623438..." 其实是 "acca2b48..." 的 hex），
-     * 长度在 0x44。必须转回字节再转 hex，否则拿去查库/对 key 永远对不上。
+     * ⚠️ 真机 + 反汇编双重确认：0x48 处存的就是 **hash 字符串本身**
+     * （如 "878fc31e185c898ce6bd4762826cb2c5"，32 个可打印 ASCII 字符），
+     * 长度在 0x44（实测恒为 0x20）。
+     *
+     * 旧实现误判它是「hash 的 hex 编码」又解了一次 hex，
+     * 于是把 32 位 hex 串变成 16 字节二进制乱码，
+     * 拿去查 MMKV / 数据库永远命中不了 —— 日志里那句
+     *   QMC2 跳过(无 key) hash=<乱码>
+     * 就是这么来的。绝对不要再做二次 hex 解码。
      */
     private fun audioHash(h: ByteArray): String? {
         val len = le32(h, 0x44)
         if (len <= 0 || 0x48 + len > h.size) return null
-        val ascii = String(h, 0x48, len, Charsets.US_ASCII).trimEnd('\u0000')
-        // 全为 hex 字符且长度为偶数 → 是 hex 编码的 hash
-        if (ascii.length % 2 == 0 && ascii.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) {
-            val out = StringBuilder(ascii.length / 2)
-            var i = 0
-            while (i < ascii.length) {
-                out.append(ascii.substring(i, i + 2).toInt(16).toChar())
-                i += 2
-            }
-            return out.toString()
-        }
-        return ascii
+        val raw = String(h, 0x48, len, Charsets.US_ASCII).trimEnd('\u0000').trim()
+        if (raw.length != 32) return null
+        if (!raw.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) return null
+        return raw.lowercase()
     }
 
     /** 在酷狗数据库里按 mgg_hash / filehash 找 fileuserkey */
